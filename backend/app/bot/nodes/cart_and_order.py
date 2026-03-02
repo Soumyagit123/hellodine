@@ -81,7 +81,7 @@ async def cart_executor(state: BotState) -> BotState:
                     items_to_add = [{"name": item_name, "item_id": item_id, "quantity": entities.get("quantity", 1)}]
 
             if not items_to_add:
-                state["final_response"] = {"type": "text", "body": "What would you like to add? Say e.g. *add 2 paneer tikka*."}
+                state["final_response"] = {"type": "text", "body": "What would you like to add? Say e.g. *add 2 burgers* or pick from the menu."}
                 return state
 
             last_category_id = None

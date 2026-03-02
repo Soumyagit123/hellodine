@@ -27,19 +27,19 @@ Intents:
 - OTHER: greetings, help, etc.
 
 Return ONLY JSON:
-{
+{{
   "intent": "ADD_ITEM",
   "items": [
-    {"name": "burger", "quantity": 2},
-    {"name": "coke", "quantity": 1}
+    {{"name": "burger", "quantity": 2}},
+    {{"name": "coke", "quantity": 1}}
   ]
-}
+}}
 
 Examples:
-- "i want 2 paneer tikka and 1 butter chicken" -> {"intent": "ADD_ITEM", "items": [{"name": "paneer tikka", "quantity": 2}, {"name": "butter chicken", "quantity": 1}]}
-- "add three large pizzas" -> {"intent": "ADD_ITEM", "items": [{"name": "large pizzas", "quantity": 3}]}
-- "Add two more panner butter masala. And one more garlic pepper mushroom" -> {"intent": "ADD_ITEM", "items": [{"name": "panner butter masala", "quantity": 2}, {"name": "garlic pepper mushroom", "quantity": 1}]}
-- "show me the menu" -> {"intent": "BROWSE", "items": []}
+- "i want 2 paneer tikka and 1 butter chicken" -> {{"intent": "ADD_ITEM", "items": [{{"name": "paneer tikka", "quantity": 2}}, {{"name": "butter chicken", "quantity": 1}}]}}
+- "add three large pizzas" -> {{"intent": "ADD_ITEM", "items": [{{"name": "large pizzas", "quantity": 3}}]}}
+- "Add two more panner butter masala. And one more garlic pepper mushroom" -> {{"intent": "ADD_ITEM", "items": [{{"name": "panner butter masala", "quantity": 2}}, {{"name": "garlic pepper mushroom", "quantity": 1}}]}}
+- "show me the menu" -> {{"intent": "BROWSE", "items": []}}
 
 Customer message: "{message}"
 """

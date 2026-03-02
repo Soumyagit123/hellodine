@@ -3,6 +3,7 @@ import uuid
 from app.bot.state import BotState
 from app.database import AsyncSessionLocal
 from app.models.menu import MenuCategory, MenuItem
+from app.models.cart import Cart, CartStatus
 from sqlalchemy import select
 
 
