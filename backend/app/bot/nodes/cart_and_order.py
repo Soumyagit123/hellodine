@@ -90,15 +90,25 @@ async def cart_executor(state: BotState) -> BotState:
             for entry in items_to_add:
                 menu_item = None
                 qty = int(entry.get("quantity") or 1)
+                name_query = (entry.get("name") or "").lower().strip()
                 
                 if entry.get("item_id"):
                     res = await db.execute(select(MenuItem).where(MenuItem.id == uuid.UUID(entry["item_id"])))
                     menu_item = res.scalar_one_or_none()
-                elif entry.get("name"):
+                elif name_query:
                     items_res = await db.execute(select(MenuItem).where(MenuItem.branch_id == uuid.UUID(branch_id), MenuItem.is_available == True))
                     all_m = items_res.scalars().all()
-                    match = [i for i in all_m if entry["name"].lower() in i.name.lower()]
-                    if match: menu_item = match[0]
+                    
+                    # 1. Direct match
+                    match = [i for i in all_m if name_query in i.name.lower()]
+                    if not match:
+                        # 2. Keyword/token-based match (more resilient to "two" or typos)
+                        tokens = [t for t in name_query.split() if len(t) > 2] # Avoid "of", "and"
+                        if tokens:
+                            match = [i for i in all_m if any(t in i.name.lower() for t in tokens)]
+                    
+                    if match:
+                        menu_item = match[0]
 
                 if menu_item:
                     cart = await add_item_to_cart(uuid.UUID(session_id), menu_item.id, qty, db)
@@ -106,7 +116,7 @@ async def cart_executor(state: BotState) -> BotState:
                     added_names.append(f"*{menu_item.name}* ×{qty}")
 
             if not added_names:
-                state["final_response"] = {"type": "text", "body": "❌ Couldn't find those items. Say *show menu* to browse."}
+                state["final_response"] = {"type": "text", "body": "❌ Couldn't find those items. Please select from the menu or try typing the item name exactly."}
                 return state
 
             # --- Simplified "Keep Picking" UX ---
@@ -114,8 +124,7 @@ async def cart_executor(state: BotState) -> BotState:
             if entities.get("item_id") and last_category_id:
                 state["intent"] = "BROWSE"
                 state["entities"] = {"category_id": str(last_category_id)}
-                # Store a confirmation prefix to show at the top of the next list
-                state["loop_prefix"] = f"✅ Added: {added_names[0]}" if added_names else "✅ Added!"
+                state["loop_prefix"] = f"✅ Added: {added_names[0]}"
                 return state
 
             # If it was a text-based NLP order, just show a summary

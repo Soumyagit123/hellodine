@@ -37,20 +37,25 @@ async def menu_retrieval(state: BotState) -> BotState:
                     return state
 
                 # Get current cart count for friendly feedback
-                cart_res = await db.execute(select(Cart).where(Cart.session_id == uuid.UUID(state["session_id"]), Cart.status == CartStatus.OPEN))
-                cart = cart_res.scalar_one_or_none()
                 cart_status = ""
-                if cart and cart.total > 0:
-                    item_count_res = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
-                    count = sum(ci.quantity for ci in item_count_res.scalars().all())
-                    cart_status = f"🛒 In Cart: {count} items (₹{cart.total:.0f})\n"
+                cart_total = 0
+                try:
+                    cart_res = await db.execute(select(Cart).where(Cart.session_id == uuid.UUID(state["session_id"]), Cart.status == CartStatus.OPEN))
+                    cart = cart_res.scalar_one_or_none()
+                    if cart and cart.total > 0:
+                        item_count_res = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
+                        count = sum(ci.quantity for ci in item_count_res.scalars().all())
+                        cart_status = f"🛒 In Cart: {count} items (₹{cart.total:.0f})\n"
+                        cart_total = cart.total
+                except Exception as e:
+                    print(f"Cart status feedback error: {e}")
 
                 rows = []
                 # 0. Global Review & Checkout at the Top
                 rows.append({
                     "id": "view_cart",
                     "title": "✅ Finish & Checkout",
-                    "description": f"Ready to order? ({cart.total if cart else 0} total)"
+                    "description": f"Ready to order? ({cart_total:.0f} total)"
                 })
 
                 for item in items[:8]: # Show 8 items + Checkout + Back

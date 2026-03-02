@@ -92,12 +92,12 @@ async def intent_router(state: BotState) -> BotState:
     order_triggers = ["add", "want", "give", "more", "plus", "+", "paisa", "order", "mangva", "karlo", "daalo", "chahiye"]
     is_likely_order = any(w in lower for w in order_triggers) and len(lower.split()) > 1
     
-    browse_triggers = ["menu", "list", "food", "khana", "dikhao", "show"]
-    if any(w in lower for w in browse_triggers):
+    # 3. Strict EXACT matches for Navigation
+    if lower in ("menu", "khana", "dikhao", "list items", "categories"):
         state["intent"] = "BROWSE"
         return state
 
-    # 3. LLM classification
+    # 4. LLM classification
     try:
         prompt = INTENT_PROMPT.format(message=text)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
@@ -110,7 +110,7 @@ async def intent_router(state: BotState) -> BotState:
         state["intent"] = parsed.get("intent", "OTHER")
         
         # --- AGGRESSIVE OVERRIDE ---
-        # If user said "Add..." or "More..." but AI said OTHER, force ADD_ITEM
+        # If user says "Add...", "More..." or shows clear order intent, force ADD_ITEM
         if state["intent"] == "OTHER" and is_likely_order:
             state["intent"] = "ADD_ITEM"
 
@@ -124,9 +124,15 @@ async def intent_router(state: BotState) -> BotState:
         # FALLBACK: If AI fails but it looks like an order, guess ADD_ITEM
         if is_likely_order:
             state["intent"] = "ADD_ITEM"
-            # We can't extract names perfectly without AI, but we can try basic split
-            # Better to let card_executor handle "unknown item" than chat fallback
-            state["entities"] = {"name": text.replace("add", "").replace("more", "").strip(), "quantity": 1}
+            clean_text = text.lower().replace("add", "").replace("more", "").replace("give", "").strip()
+            # Simple number word to digit mapping for fallback
+            num_map = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+            qty = 1
+            for word, val in num_map.items():
+                if word in clean_text:
+                    qty = val
+                    clean_text = clean_text.replace(word, "").strip()
+            state["entities"] = {"name": clean_text, "quantity": qty}
         else:
             state["intent"] = "OTHER"
             state["entities"] = {}
