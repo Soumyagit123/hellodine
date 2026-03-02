@@ -75,8 +75,9 @@ async def receive_webhook(restaurant_id: uuid.UUID, request: Request):
         if not restaurant:
             raise HTTPException(404, "Restaurant not found")
         
-        access_token = restaurant.whatsapp_access_token
-        app_secret = restaurant.whatsapp_app_secret
+        # Use DB credentials, fall back to Render env vars if not set in DB
+        access_token = restaurant.whatsapp_access_token or settings.WA_ACCESS_TOKEN
+        app_secret = restaurant.whatsapp_app_secret or settings.WA_APP_SECRET
 
         if not access_token:
             logger.error(f"Missing WhatsApp Access Token for restaurant {restaurant_id}")
@@ -108,8 +109,9 @@ async def receive_webhook(restaurant_id: uuid.UUID, request: Request):
             # Send the response back to WhatsApp
             final = result.get("final_response")
             to = result.get("wa_user_id") # MUST be the phone number (WA_ID)
-            p_id = restaurant.whatsapp_phone_number_id
-            token = restaurant.whatsapp_access_token
+            # Use DB credentials, fall back to Render env vars if not set in DB
+            p_id = restaurant.whatsapp_phone_number_id or settings.WA_PHONE_NUMBER_ID
+            token = restaurant.whatsapp_access_token or settings.WA_ACCESS_TOKEN
             
             print(f"WEBHOOK FLOW END: intent={result.get('intent')}, to={to}, has_response={bool(final)}")
 
