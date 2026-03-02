@@ -21,7 +21,7 @@ async def get_or_create_cart(session_id: uuid.UUID, db: AsyncSession) -> Cart:
         select(Cart).where(Cart.session_id == session_id, Cart.status == CartStatus.OPEN)
         .options(selectinload(Cart.items).selectinload(CartItem.modifiers))
     )
-    cart = result.scalar_one_or_none()
+    cart = result.scalars().first()
     if not cart:
         cart = Cart(session_id=session_id)
         db.add(cart)

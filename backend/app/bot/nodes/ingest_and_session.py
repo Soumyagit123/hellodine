@@ -115,7 +115,7 @@ async def resolve_session(state: BotState) -> BotState:
             cust_result = await db.execute(
                 select(Customer).where(Customer.restaurant_id == uuid.UUID(restaurant_id), Customer.wa_user_id == wa_user_id)
             )
-            customer = cust_result.scalar_one_or_none()
+            customer = cust_result.scalars().first()
             if not customer:
                 customer = Customer(restaurant_id=uuid.UUID(restaurant_id), wa_user_id=wa_user_id)
                 db.add(customer)
@@ -151,12 +151,12 @@ async def resolve_session(state: BotState) -> BotState:
             state["intent"] = "QR_SCAN"
         return state
 
-    # ── Look up existing active session for this customer ──────────────
+        # ── Look up existing active session for this customer ──────────────
     async with AsyncSessionLocal() as db:
         cust_result = await db.execute(
             select(Customer).where(Customer.restaurant_id == uuid.UUID(restaurant_id), Customer.wa_user_id == wa_user_id)
         )
-        customer = cust_result.scalar_one_or_none()
+        customer = cust_result.scalars().first()
         if not customer:
             state["error"] = "no_session"
             return state
@@ -167,7 +167,7 @@ async def resolve_session(state: BotState) -> BotState:
                 TableSession.status == SessionStatus.ACTIVE,
             ).order_by(TableSession.started_at.desc())
         )
-        session = sess_result.scalar_one_or_none()
+        session = sess_result.scalars().first()
         
         # ── Inactivity Timeout (2 Hours) ──────────────────────────
         # If the customer hasn't messaged in 2 hours, expire the session
