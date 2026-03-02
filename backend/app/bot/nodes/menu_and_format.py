@@ -37,7 +37,14 @@ async def menu_retrieval(state: BotState) -> BotState:
                     return state
 
                 rows = []
-                for item in items[:9]: # Show 9 items + 1 'Back' row
+                # 0. Global Review & Checkout at the Top
+                rows.append({
+                    "id": "view_cart",
+                    "title": "🛒 Review & Checkout",
+                    "description": "View cart and place order"
+                })
+
+                for item in items[:8]: # Show 8 items + Checkout + Back
                     veg = VEG_EMOJI["veg"] if item.is_veg else VEG_EMOJI["nonveg"]
                     title = f"{veg} {item.name}"[:24]
                     rows.append({
@@ -55,7 +62,7 @@ async def menu_retrieval(state: BotState) -> BotState:
 
                 state["final_response"] = {
                     "type": "list",
-                    "body": "Select an item to add to your cart: 👇",
+                    "body": "Select item(s) to add to your cart: 👇",
                     "button_label": "View Items",
                     "sections": [{"title": "Category Items", "rows": rows}],
                 }

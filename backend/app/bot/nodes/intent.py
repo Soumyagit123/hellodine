@@ -13,10 +13,12 @@ llm = ChatGoogleGenerativeAI(
 
 INTENT_PROMPT = """You are a smart intent classifier for a restaurant WhatsApp ordering bot.
 
-Classify the customer message and extract multiple items if present.
+Classify the customer message and extract multiple items if present. 
+If the user asks for multiple items (e.g., "2 burgers and a coke"), extract ALL of them into the "items" array.
+
 Intents:
-- BROWSE: see menu/categories
-- ADD_ITEM: add item(s) to cart (e.g., "2 burgers", "one coke and two fries")
+- BROWSE: user wants to see menu, categories, or items
+- ADD_ITEM: user wants to add item(s) to cart (e.g., "add 2 burgers", "give me one coke and 2 fries")
 - REMOVE_ITEM: remove from cart
 - UPDATE_QTY: change quantity
 - CONFIRM: place/confirm order
@@ -29,9 +31,14 @@ Return ONLY JSON:
   "intent": "ADD_ITEM",
   "items": [
     {"name": "burger", "quantity": 2},
-    {"name": "fries", "quantity": 2, "notes": "crispy"}
+    {"name": "coke", "quantity": 1}
   ]
 }
+
+Examples:
+- "i want 2 paneer tikka and 1 butter chicken" -> {"intent": "ADD_ITEM", "items": [{"name": "paneer tikka", "quantity": 2}, {"name": "butter chicken", "quantity": 1}]}
+- "add three large pizzas" -> {"intent": "ADD_ITEM", "items": [{"name": "large pizzas", "quantity": 3}]}
+- "show me the menu" -> {"intent": "BROWSE", "items": []}
 
 Customer message: "{message}"
 """

@@ -84,7 +84,7 @@ async def cart_executor(state: BotState) -> BotState:
                 state["final_response"] = {"type": "text", "body": "What would you like to add? Say e.g. *add 2 paneer tikka*."}
                 return state
 
-            last_item = None
+            last_category_id = None
             added_names = []
             
             for entry in items_to_add:
@@ -102,28 +102,31 @@ async def cart_executor(state: BotState) -> BotState:
 
                 if menu_item:
                     cart = await add_item_to_cart(uuid.UUID(session_id), menu_item.id, qty, db)
-                    last_item = menu_item
-                    added_names.append(f"{menu_item.name} ×{qty}")
+                    last_category_id = menu_item.category_id
+                    added_names.append(f"*{menu_item.name}* ×{qty}")
 
-            if not last_item:
+            if not added_names:
                 state["final_response"] = {"type": "text", "body": "❌ Couldn't find those items. Say *show menu* to browse."}
                 return state
 
-            # Fetch current quantity for the last added item to show in buttons
-            ci_res = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id, CartItem.menu_item_id == last_item.id))
-            ci = ci_res.scalar_one_or_none()
-            current_qty = ci.quantity if ci else 0
+            # --- Simplified "Keep Picking" UX ---
+            # If item was added via ID (from list), re-show the list for a "multi-select" feel
+            if entities.get("item_id") and last_category_id:
+                state["intent"] = "BROWSE"
+                state["entities"] = {"category_id": str(last_category_id)}
+                # We don't set final_response yet; the next node (menu_retrieval) will do it.
+                # But we can add a prefix to the next message body if needed (handled in menu_retrieval)
+                # For now, just let it loop.
+                return state
 
-            veg = "🟢" if last_item.is_veg else "🔴"
-            body = f"✅ Added: {', '.join(added_names)}\n\n🛒 Cart Total: *₹{cart.total:.2f}*\n\nAdjust *{last_item.name}* quantity: 👇"
-            
+            # If it was a text-based NLP order, just show a summary
             state["final_response"] = {
                 "type": "buttons",
-                "body": body,
+                "body": f"✅ Added: {', '.join(added_names)}\n\n🛒 Cart Total: *₹{cart.total:.2f}*",
                 "buttons": [
-                    {"id": f"qty_dec_{last_item.id}", "title": f"➖ 1 ({current_qty})"},
-                    {"id": f"qty_inc_{last_item.id}", "title": "➕ 1"},
-                    {"id": f"cat_{last_item.category_id}", "title": "Add More 📋"},
+                    {"id": "show_menu", "title": "Add More 📋"},
+                    {"id": "view_cart", "title": "Review Cart 🛒"},
+                    {"id": "confirm_order", "title": "Checkout ✅"},
                 ],
             }
             return state

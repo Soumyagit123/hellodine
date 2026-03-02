@@ -111,8 +111,11 @@ async def update_status(order_id: uuid.UUID, data: StatusUpdateRequest, db: Asyn
                 wa_phone_id = (restaurant.whatsapp_phone_number_id if restaurant else None) or settings.WA_PHONE_NUMBER_ID
                 wa_token = (restaurant.whatsapp_access_token if restaurant else None) or settings.WA_ACCESS_TOKEN
                 
-                customer_phone = order.session.customer_phone
-                if customer_phone and wa_phone_id and wa_token:
+                raw_phone = order.session.customer_phone
+                if raw_phone and wa_phone_id and wa_token:
+                    # Meta API requires digits-only phone numbers (no +)
+                    customer_phone = "".join(filter(str.isdigit, raw_phone))
+                    
                     status_messages = {
                         OrderStatus.ACCEPTED: f"✅ Your order *#{order.order_number}* has been accepted by the kitchen!",
                         OrderStatus.PREPARING: f"👨‍🍳 We are now preparing your order *#{order.order_number}*.",
