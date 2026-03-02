@@ -60,9 +60,14 @@ async def menu_retrieval(state: BotState) -> BotState:
                     "description": "View other menu sections"
                 })
 
+                prefix = state.pop("loop_prefix", "")
+                body = "Select item(s) to add to your cart: 👇"
+                if prefix:
+                    body = f"{prefix}\n\n{body}"
+
                 state["final_response"] = {
                     "type": "list",
-                    "body": "Select item(s) to add to your cart: 👇",
+                    "body": body,
                     "button_label": "View Items",
                     "sections": [{"title": "Category Items", "rows": rows}],
                 }

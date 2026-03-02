@@ -50,6 +50,13 @@ def route_after_session(state: BotState) -> str:
     return "detect_language"
 
 
+def route_after_cart(state: BotState) -> str:
+    intent = state.get("intent")
+    if intent == "BROWSE":
+        return "menu_retrieval"
+    return "response_formatter"
+
+
 def build_graph() -> StateGraph:
     g = StateGraph(BotState)
 
@@ -87,9 +94,16 @@ def build_graph() -> StateGraph:
         "restaurant_chat": "restaurant_chat",
         "response_formatter": "response_formatter",
     })
-    # All action nodes → formatter → END
-    for node in ("menu_retrieval", "item_info", "cart_executor", "checkout_guard", "kitchen_dispatch", "bill_generator", "restaurant_chat"):
+
+    # Action Edges
+    g.add_conditional_edges("cart_executor", route_after_cart, {
+        "menu_retrieval": "menu_retrieval",
+        "response_formatter": "response_formatter"
+    })
+
+    for node in ("menu_retrieval", "item_info", "checkout_guard", "kitchen_dispatch", "bill_generator", "restaurant_chat"):
         g.add_edge(node, "response_formatter")
+
     g.add_edge("response_formatter", END)
 
     return g.compile()

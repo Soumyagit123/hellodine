@@ -114,9 +114,8 @@ async def cart_executor(state: BotState) -> BotState:
             if entities.get("item_id") and last_category_id:
                 state["intent"] = "BROWSE"
                 state["entities"] = {"category_id": str(last_category_id)}
-                # We don't set final_response yet; the next node (menu_retrieval) will do it.
-                # But we can add a prefix to the next message body if needed (handled in menu_retrieval)
-                # For now, just let it loop.
+                # Store a confirmation prefix to show at the top of the next list
+                state["loop_prefix"] = f"✅ Added: {added_names[0]}" if added_names else "✅ Added!"
                 return state
 
             # If it was a text-based NLP order, just show a summary
