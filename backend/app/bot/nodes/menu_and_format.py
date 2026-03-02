@@ -36,12 +36,21 @@ async def menu_retrieval(state: BotState) -> BotState:
                     state["final_response"] = {"type": "text", "body": "No items found in this category. 📋"}
                     return state
 
+                # Get current cart count for friendly feedback
+                cart_res = await db.execute(select(Cart).where(Cart.session_id == uuid.UUID(state["session_id"]), Cart.status == CartStatus.OPEN))
+                cart = cart_res.scalar_one_or_none()
+                cart_status = ""
+                if cart and cart.total > 0:
+                    item_count_res = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
+                    count = sum(ci.quantity for ci in item_count_res.scalars().all())
+                    cart_status = f"🛒 In Cart: {count} items (₹{cart.total:.0f})\n"
+
                 rows = []
                 # 0. Global Review & Checkout at the Top
                 rows.append({
                     "id": "view_cart",
-                    "title": "🛒 Review & Checkout",
-                    "description": "View cart and place order"
+                    "title": "✅ Finish & Checkout",
+                    "description": f"Ready to order? ({cart.total if cart else 0} total)"
                 })
 
                 for item in items[:8]: # Show 8 items + Checkout + Back
@@ -61,7 +70,7 @@ async def menu_retrieval(state: BotState) -> BotState:
                 })
 
                 prefix = state.pop("loop_prefix", "")
-                body = "Select item(s) to add to your cart: 👇"
+                body = f"{cart_status}Select items to add: 👇\n\n💡 Tip: Just type *'2 burgers and 1 coke'* to add multiple items at once!"
                 if prefix:
                     body = f"{prefix}\n\n{body}"
 
