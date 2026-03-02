@@ -1,21 +1,18 @@
-"""Bot node — restaurant_chat for general Q&A."""
+"""Bot node — restaurant_chat for general Q&A using native Google AI."""
 import uuid
+import google.generativeai as genai
 from app.bot.state import BotState
 from app.database import AsyncSessionLocal
 from app.models.tenancy import Restaurant, Branch
 from sqlalchemy import select
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import SystemMessage, HumanMessage
 from app.config import settings
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
-    google_api_key=settings.GEMINI_API_KEY,
-    temperature=0.7,
-)
+# Configure Google AI
+genai.configure(api_key=settings.GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 async def restaurant_chat(state: BotState) -> BotState:
-    """Answers general questions about the restaurant using LLM + DB context."""
+    """Answers general questions about the restaurant using native Google AI library."""
     restaurant_id = state.get("restaurant_id")
     branch_id = state.get("branch_id")
     message = state.get("message_text", "")
@@ -50,13 +47,11 @@ Guidelines:
 """
 
         try:
-            response = await llm.ainvoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=message)
-            ])
+            # Native synchronous call (standard for gemini v1)
+            response = model.generate_content(f"{system_prompt}\n\nUser: {message}")
             state["final_response"] = {
                 "type": "text",
-                "body": response.content.strip()
+                "body": response.text.strip()
             }
         except Exception as e:
             print(f"Chat node error: {e}")

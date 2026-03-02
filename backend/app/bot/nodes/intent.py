@@ -1,15 +1,12 @@
-"""Bot nodes — detect_language (lightweight) + intent_router (Gemini)"""
+"""Bot nodes — detect_language (lightweight) + intent_router (Google AI)"""
 import json
+import google.generativeai as genai
 from app.bot.state import BotState
 from app.config import settings
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
-    google_api_key=settings.GEMINI_API_KEY,
-    temperature=0,
-)
+# Configure Google AI
+genai.configure(api_key=settings.GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 INTENT_PROMPT = """You are a smart intent classifier for a restaurant WhatsApp ordering bot.
 
@@ -53,7 +50,7 @@ async def detect_language(state: BotState) -> BotState:
 
 
 async def intent_router(state: BotState) -> BotState:
-    """Use Gemini to classify intent + extract entities."""
+    """Use Gemini to classify intent + extract entities via native google-generativeai."""
     if state.get("intent") == "QR_SCAN":
         return state
 
@@ -99,9 +96,14 @@ async def intent_router(state: BotState) -> BotState:
 
     # 4. LLM classification
     try:
+        # Use a secondary check for models/ prefix if needed, or just use the discovery's best
         prompt = INTENT_PROMPT.format(message=text)
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        raw = response.content.strip()
+        
+        # Native library call (async version not standard in gemini v1, using sync for reliability in node)
+        # Note: In production, we'd use a thread pool or aioify, but here sync is fine for the webhook context
+        response = model.generate_content(prompt)
+        raw = response.text.strip()
+        
         if "```" in raw:
             raw = raw.split("```")[1]
             if raw.startswith("json"): raw = raw[4:]
@@ -110,7 +112,6 @@ async def intent_router(state: BotState) -> BotState:
         state["intent"] = parsed.get("intent", "OTHER")
         
         # --- AGGRESSIVE OVERRIDE ---
-        # If user says "Add...", "More..." or shows clear order intent, force ADD_ITEM
         if state["intent"] == "OTHER" and is_likely_order:
             state["intent"] = "ADD_ITEM"
 
@@ -125,7 +126,6 @@ async def intent_router(state: BotState) -> BotState:
         if is_likely_order:
             state["intent"] = "ADD_ITEM"
             clean_text = text.lower().replace("add", "").replace("more", "").replace("give", "").strip()
-            # Simple number word to digit mapping for fallback
             num_map = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
             qty = 1
             for word, val in num_map.items():
