@@ -23,10 +23,32 @@ async def cart_executor(state: BotState) -> BotState:
         state["error"] = "no_session"
         return state
 
-    # ── CART_VIEW ────────────────────────────────────────────────
-    if intent == "CART_VIEW":
-        async with AsyncSessionLocal() as db:
-            cart = await get_or_create_cart(uuid.UUID(session_id), db)
+    async with AsyncSessionLocal() as db:
+        cart = await get_or_create_cart(uuid.UUID(session_id), db)
+
+        # ── UPDATE_QTY (from Buttons + / -) ──────────────────────────
+        if intent == "UPDATE_QTY":
+            item_id = entities.get("item_id")
+            operation = entities.get("operation") # 'inc' or 'dec'
+            
+            # Find the cart item for this menu item
+            ci_res = await db.execute(
+                select(CartItem).where(CartItem.cart_id == cart.id, CartItem.menu_item_id == uuid.UUID(item_id))
+            )
+            cart_item = ci_res.scalar_one_or_none()
+            
+            if cart_item:
+                delta = 1 if operation == "inc" else -1
+                cart = await update_cart_item_quantity(cart_item.id, delta, db)
+                # Fallthrough to ADD_ITEM style response to show updated qty
+                intent = "ADD_ITEM" 
+                entities["item_id"] = item_id
+            else:
+                state["intent"] = "BROWSE" # Fallback
+                return state
+
+        # ── CART_VIEW ────────────────────────────────────────────────
+        if intent == "CART_VIEW":
             result = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
             items = result.scalars().all()
             if not items:
@@ -43,85 +65,72 @@ async def cart_executor(state: BotState) -> BotState:
             cart_text = "\n".join(lines)
             state["final_response"] = {
                 "type": "text",
-                "body": f"🛒 *Your Cart (Table)*\n\n{cart_text}\n\n💰 *Total: ₹{cart.total:.2f}*\n(incl. CGST ₹{cart.cgst_amount:.2f} + SGST ₹{cart.sgst_amount:.2f})\n\nSay *confirm* to place order or keep adding items.",
+                "body": f"🛒 *Your Cart (Table)*\n\n{cart_text}\n\n💰 *Total: ₹{cart.total:.2f}*\n\nSay *confirm* to place order or keep adding items.",
             }
-        return state
-
-    # ── ADD_ITEM ─────────────────────────────────────────────────
-    if intent == "ADD_ITEM":
-        item_name = entities.get("item_name", "")
-        try:
-            quantity = int(entities.get("quantity") or 1)
-        except (ValueError, TypeError):
-            quantity = 1
-        notes = entities.get("notes")
-
-        if not item_name and not entities.get("item_id"):
-            state["final_response"] = {"type": "text", "body": "What would you like to add? Say e.g. *add 2 paneer tikka*."}
             return state
 
-        async with AsyncSessionLocal() as db:
-            menu_item = None
-            item_id = entities.get("item_id")
+        # ── ADD_ITEM ─────────────────────────────────────────────────
+        if intent == "ADD_ITEM":
+            items_to_add = entities.get("items", []) # Multi-item NLP support
             
-            if item_id:
-                try:
-                    res = await db.execute(select(MenuItem).where(MenuItem.id == uuid.UUID(item_id)))
-                    menu_item = res.scalar_one_or_none()
-                except Exception:
-                    pass
-            
-            if not menu_item and item_name:
-                # Fuzzy match item by name in branch
-                items_result = await db.execute(
-                    select(MenuItem).where(
-                        MenuItem.branch_id == uuid.UUID(branch_id),
-                        MenuItem.is_available == True,
-                    )
-                )
-                all_items = items_result.scalars().all()
-                matched = [i for i in all_items if item_name.lower() in i.name.lower()]
-                if matched:
-                    menu_item = matched[0]
+            # If not multi-item, wrap the single item entity
+            if not items_to_add:
+                item_id = entities.get("item_id")
+                item_name = entities.get("item_name")
+                if item_id or item_name:
+                    items_to_add = [{"name": item_name, "item_id": item_id, "quantity": entities.get("quantity", 1)}]
 
-            if not menu_item:
-                state["final_response"] = {
-                    "type": "text",
-                    "body": f"❌ Couldn't find that item. Say *show menu* to browse.",
-                }
+            if not items_to_add:
+                state["final_response"] = {"type": "text", "body": "What would you like to add? Say e.g. *add 2 paneer tikka*."}
                 return state
 
-            try:
-                cart = await add_item_to_cart(
-                    session_id=uuid.UUID(session_id),
-                    menu_item_id=menu_item.id,
-                    quantity=quantity,
-                    db=db,
-                    notes=notes,
-                )
-                veg = "🟢" if menu_item.is_veg else "🔴"
-                state["final_response"] = {
-                    "type": "buttons",
-                    "body": (
-                        f"✅ Added {veg} *{menu_item.name}* ×{quantity}!\n"
-                        + (f"📝 Note: {notes}\n" if notes else "")
-                        + f"\n🛒 Cart total: *₹{cart.total:.2f}*\n\nWhat would you like to do next?"
-                    ),
-                    "buttons": [
-                        {"id": f"cat_{menu_item.category_id}", "title": "Add More 📋"},
-                        {"id": "view_cart", "title": "View Cart 🛒"},
-                        {"id": "confirm_order", "title": "Checkout ✅"},
-                    ],
-                }
-            except ValueError as e:
-                state["final_response"] = {"type": "text", "body": f"❌ {e}"}
-        return state
+            last_item = None
+            added_names = []
+            
+            for entry in items_to_add:
+                menu_item = None
+                qty = int(entry.get("quantity") or 1)
+                
+                if entry.get("item_id"):
+                    res = await db.execute(select(MenuItem).where(MenuItem.id == uuid.UUID(entry["item_id"])))
+                    menu_item = res.scalar_one_or_none()
+                elif entry.get("name"):
+                    items_res = await db.execute(select(MenuItem).where(MenuItem.branch_id == uuid.UUID(branch_id), MenuItem.is_available == True))
+                    all_m = items_res.scalars().all()
+                    match = [i for i in all_m if entry["name"].lower() in i.name.lower()]
+                    if match: menu_item = match[0]
 
-    # ── REMOVE_ITEM ──────────────────────────────────────────────
-    if intent == "REMOVE_ITEM":
-        item_name = entities.get("item_name", "")
-        async with AsyncSessionLocal() as db:
-            cart = await get_or_create_cart(uuid.UUID(session_id), db)
+                if menu_item:
+                    cart = await add_item_to_cart(uuid.UUID(session_id), menu_item.id, qty, db)
+                    last_item = menu_item
+                    added_names.append(f"{menu_item.name} ×{qty}")
+
+            if not last_item:
+                state["final_response"] = {"type": "text", "body": "❌ Couldn't find those items. Say *show menu* to browse."}
+                return state
+
+            # Fetch current quantity for the last added item to show in buttons
+            ci_res = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id, CartItem.menu_item_id == last_item.id))
+            ci = ci_res.scalar_one_or_none()
+            current_qty = ci.quantity if ci else 0
+
+            veg = "🟢" if last_item.is_veg else "🔴"
+            body = f"✅ Added: {', '.join(added_names)}\n\n🛒 Cart Total: *₹{cart.total:.2f}*\n\nAdjust *{last_item.name}* quantity: 👇"
+            
+            state["final_response"] = {
+                "type": "buttons",
+                "body": body,
+                "buttons": [
+                    {"id": f"qty_dec_{last_item.id}", "title": f"➖ 1 ({current_qty})"},
+                    {"id": f"qty_inc_{last_item.id}", "title": "➕ 1"},
+                    {"id": f"cat_{last_item.category_id}", "title": "Add More 📋"},
+                ],
+            }
+            return state
+
+        # ── REMOVE_ITEM ──────────────────────────────────────────────
+        if intent == "REMOVE_ITEM":
+            item_name = entities.get("item_name", "")
             items_result = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
             cart_items = items_result.scalars().all()
 
@@ -143,6 +152,8 @@ async def cart_executor(state: BotState) -> BotState:
                 "body": f"✅ Removed *{item_name}* from cart.\n🛒 Cart total: *₹{cart.total:.2f}*",
             }
         return state
+
+    return state
 
     return state
 

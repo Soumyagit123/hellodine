@@ -41,7 +41,7 @@ async def menu_retrieval(state: BotState) -> BotState:
                     veg = VEG_EMOJI["veg"] if item.is_veg else VEG_EMOJI["nonveg"]
                     title = f"{veg} {item.name}"[:24]
                     rows.append({
-                        "id": f"item_{item.id}",
+                        "id": f"item_add_{item.id}",
                         "title": title,
                         "description": f"₹{item.base_price:.0f}",
                     })
@@ -82,7 +82,7 @@ async def menu_retrieval(state: BotState) -> BotState:
             for item in items[:10]:
                 veg = VEG_EMOJI["veg"] if item.is_veg else VEG_EMOJI["nonveg"]
                 title = f"{veg} {item.name}"[:24]
-                rows.append({"id": f"item_{item.id}", "title": title, "description": f"₹{item.base_price:.0f}"})
+                rows.append({"id": f"item_add_{item.id}", "title": title, "description": f"₹{item.base_price:.0f}"})
             
             state["final_response"] = {
                 "type": "list",
@@ -115,7 +115,7 @@ async def menu_retrieval(state: BotState) -> BotState:
                 spice = SPICE_EMOJI.get(item.spice_level, "") if item.spice_level else ""
                 title = f"{veg} {item.name}"[:24]
                 rows.append({
-                    "id": f"item_{item.id}",
+                    "id": f"item_add_{item.id}",
                     "title": title,
                     "description": f"₹{item.base_price:.0f} {spice}",
                 })

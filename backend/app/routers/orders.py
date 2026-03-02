@@ -13,6 +13,11 @@ from app.models.tenancy import Table
 from app.services.order_service import create_order_from_cart, CheckoutError
 from app.services.ws_manager import manager
 
+from app.bot.wa_sender import send_text
+from app.models.tenancy import Restaurant, Branch
+from app.models.customers import TableSession
+from app.config import settings
+
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 
 
@@ -72,21 +77,55 @@ async def get_order(order_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 @router.patch("/{order_id}/status")
 async def update_status(order_id: uuid.UUID, data: StatusUpdateRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Order).where(Order.id == order_id))
+    result = await db.execute(
+        select(Order)
+        .where(Order.id == order_id)
+        .options(selectinload(Order.session))
+    )
     order = result.scalar_one_or_none()
     if not order:
         raise HTTPException(404, "Order not found")
 
+    old_status = order.status
     order.status = data.status
     await db.commit()
 
-    # Broadcast status update to kitchen
+    # 1. Broadcast status update to kitchen PWA
     await manager.broadcast_to_branch(str(order.branch_id), {
         "event": "ORDER_STATUS_UPDATED",
         "order_id": str(order.id),
         "order_number": order.order_number,
         "status": order.status,
     })
+
+    # 2. WhatsApp Notification (if status changed and not back to NEW)
+    if data.status != old_status and data.status != OrderStatus.NEW:
+        try:
+            # Get restaurant credentials
+            branch_res = await db.execute(select(Branch).where(Branch.id == order.branch_id))
+            branch = branch_res.scalar_one_or_none()
+            if branch:
+                rest_res = await db.execute(select(Restaurant).where(Restaurant.id == branch.restaurant_id))
+                restaurant = rest_res.scalar_one_or_none()
+                
+                wa_phone_id = (restaurant.whatsapp_phone_number_id if restaurant else None) or settings.WA_PHONE_NUMBER_ID
+                wa_token = (restaurant.whatsapp_access_token if restaurant else None) or settings.WA_ACCESS_TOKEN
+                
+                customer_phone = order.session.customer_phone
+                if customer_phone and wa_phone_id and wa_token:
+                    status_messages = {
+                        OrderStatus.ACCEPTED: f"✅ Your order *#{order.order_number}* has been accepted by the kitchen!",
+                        OrderStatus.PREPARING: f"👨‍🍳 We are now preparing your order *#{order.order_number}*.",
+                        OrderStatus.READY: f"🔔 Hot & Ready! Your order *#{order.order_number}* is ready to be served.",
+                        OrderStatus.SERVED: f"🍽️ Your order *#{order.order_number}* has been served. Enjoy your meal!",
+                        OrderStatus.CANCELLED: f"⚠️ Your order *#{order.order_number}* has been cancelled.",
+                    }
+                    msg = status_messages.get(data.status)
+                    if msg:
+                        await send_text(customer_phone, msg, wa_phone_id, wa_token)
+        except Exception as e:
+            print(f"ERROR: Failed to send status notification: {e}")
+
     return {"ok": True, "status": order.status}
 
 

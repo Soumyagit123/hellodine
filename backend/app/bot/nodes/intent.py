@@ -11,26 +11,27 @@ llm = ChatGoogleGenerativeAI(
     temperature=0,
 )
 
-INTENT_PROMPT = """You are an intent classifier for a restaurant WhatsApp ordering chatbot.
+INTENT_PROMPT = """You are a smart intent classifier for a restaurant WhatsApp ordering bot.
 
-Classify the customer message into ONE of these intents:
-- QR_SCAN        : message contains HELLODINE_START (QR pairing)
-- BROWSE         : customer wants to see menu, categories, items
-- ADD_ITEM       : customer wants to add item(s) to cart
-- REMOVE_ITEM    : customer wants to remove an item from cart
-- UPDATE_QTY     : customer wants to change quantity
-- CONFIRM        : customer wants to place/confirm their order
-- BILL           : customer wants the bill / check-out / pay
-- CART_VIEW      : customer wants to see their current cart
-- OTHER          : greetings, thanks, unrelated
+Classify the customer message and extract multiple items if present.
+Intents:
+- BROWSE: see menu/categories
+- ADD_ITEM: add item(s) to cart (e.g., "2 burgers", "one coke and two fries")
+- REMOVE_ITEM: remove from cart
+- UPDATE_QTY: change quantity
+- CONFIRM: place/confirm order
+- BILL: request bill
+- CART_VIEW: show current cart
+- OTHER: greetings, help, etc.
 
-Also extract entities:
-- item_name (string, optional)  
-- quantity (int, optional)
-- notes (string, optional — e.g. "less spicy", "no onion")
-
-Return ONLY valid JSON like:
-{"intent": "ADD_ITEM", "entities": {"item_name": "paneer tikka", "quantity": 2, "notes": "extra spicy"}}
+Return ONLY JSON:
+{
+  "intent": "ADD_ITEM",
+  "items": [
+    {"name": "burger", "quantity": 2},
+    {"name": "fries", "quantity": 2, "notes": "crispy"}
+  ]
+}
 
 Customer message: "{message}"
 """
@@ -63,10 +64,10 @@ async def intent_router(state: BotState) -> BotState:
 
     # 1. Interactive Button/List IDs (Priority)
     if lower == "do_confirm":
-        state["intent"] = "PLACE_ORDER" # Kitchen!
+        state["intent"] = "PLACE_ORDER"
         return state
     if lower == "confirm_order":
-        state["intent"] = "CONFIRM_SUMMARY" # Preview
+        state["intent"] = "CONFIRM_SUMMARY"
         return state
     if lower == "view_cart" or lower == "edit_cart":
         state["intent"] = "CART_VIEW"
@@ -75,15 +76,23 @@ async def intent_router(state: BotState) -> BotState:
         state["intent"] = "BROWSE"
         return state
 
-    # Interactive Quantity Choice: qty_2_UUID
-    if lower.startswith("qty_"):
-        parts = lower.split("_")
-        if len(parts) >= 3:
-            state["intent"] = "ADD_ITEM"
-            state["entities"] = {"item_id": parts[2], "quantity": int(parts[1])}
-            return state
+    # NEW: Immediate Add (1 portion)
+    if lower.startswith("item_add_"):
+        state["intent"] = "ADD_ITEM"
+        state["entities"] = {"item_id": lower.replace("item_add_", ""), "quantity": 1}
+        return state
 
-    # Item selection from menu -> Show item info / qty buttons
+    # NEW: Increment / Decrement
+    if lower.startswith("qty_inc_") or lower.startswith("qty_dec_"):
+        item_id = lower.replace("qty_inc_", "").replace("qty_dec_", "")
+        state["intent"] = "UPDATE_QTY"
+        state["entities"] = {
+            "item_id": item_id,
+            "operation": "inc" if "inc" in lower else "dec"
+        }
+        return state
+
+    # Item selection from menu
     if lower.startswith("item_"):
         state["intent"] = "ITEM_INFO"
         state["entities"] = {"item_id": lower.replace("item_", "")}
@@ -95,32 +104,18 @@ async def intent_router(state: BotState) -> BotState:
         state["entities"] = {"category_id": lower.replace("cat_", "")}
         return state
 
-    # 2. Text Shortcuts
-    if any(w in lower for w in ["confirm", "place order", "done", "चेकआउट", "order kar"]):
+    # 2. Text Shortcuts (Legacy/Fuzzy)
+    if any(w in lower for w in ["confirm", "place order", "done", "order kar"]):
         state["intent"] = "CONFIRM_SUMMARY"
-        state["entities"] = {}
         return state
-    if any(w in lower for w in ["bill", "check", "pay", "payment", "बिल"]):
+    if any(w in lower for w in ["bill", "check", "pay"]):
         state["intent"] = "BILL"
-        state["entities"] = {}
         return state
-    if any(w in lower for w in ["cart", "my order", "show cart", "टोकरी"]):
+    if any(w in lower for w in ["cart", "my order", "show cart"]):
         state["intent"] = "CART_VIEW"
-        state["entities"] = {}
         return state
-    if any(w in lower for w in ["menu", "list", "show", "browse", "सूची"]):
+    if any(w in lower for w in ["menu", "list", "show", "browse"]):
         state["intent"] = "BROWSE"
-        state["entities"] = {}
-        return state
-
-    # Veg / Non-Veg Filtering
-    if any(w in lower for w in ["veg", "शाकाहारी", "vegetarian"]):
-        state["intent"] = "BROWSE"
-        state["entities"] = {"is_veg": True}
-        return state
-    if any(w in lower for w in ["non-veg", "मांसाहारी", "non veg", "chicken", "meat"]):
-        state["intent"] = "BROWSE"
-        state["entities"] = {"is_veg": False}
         return state
 
     # LLM classification
@@ -128,16 +123,22 @@ async def intent_router(state: BotState) -> BotState:
         prompt = INTENT_PROMPT.format(message=text)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         raw = response.content.strip()
-        # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
         parsed = json.loads(raw)
+        
         state["intent"] = parsed.get("intent", "OTHER")
-        state["entities"] = parsed.get("entities", {})
+        # Support multi-item format
+        if "items" in parsed:
+             state["entities"] = {"items": parsed["items"]}
+        else:
+             # Fallback for single item
+             state["entities"] = parsed.get("entities", {})
+             
     except Exception:
-        state["intent"] = "BROWSE"
+        state["intent"] = "OTHER"
         state["entities"] = {}
 
     return state

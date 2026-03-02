@@ -85,39 +85,76 @@ async def add_item_to_cart(
     if not menu_item or not menu_item.is_available:
         raise ValueError("Item not available")
 
-    unit_price = menu_item.base_price
-    if variant_id:
-        v_result = await db.execute(select(MenuItemVariant).where(MenuItemVariant.id == variant_id))
-        variant = v_result.scalar_one_or_none()
-        if variant:
-            unit_price = variant.price
-
-    cart_item = CartItem(
-        cart_id=cart.id,
-        menu_item_id=menu_item_id,
-        variant_id=variant_id,
-        quantity=quantity,
-        unit_price=unit_price,
-        notes=notes,
-        line_total=unit_price * quantity,
+    # Check if item already exists in cart with same variant and notes
+    existing_result = await db.execute(
+        select(CartItem).where(
+            CartItem.cart_id == cart.id,
+            CartItem.menu_item_id == menu_item_id,
+            CartItem.variant_id == variant_id,
+            CartItem.notes == notes
+        )
     )
-    db.add(cart_item)
-    await db.flush()
+    cart_item = existing_result.scalar_one_or_none()
 
-    if modifier_ids:
-        for mod_id in modifier_ids:
-            mod_result = await db.execute(select(MenuModifier).where(MenuModifier.id == mod_id))
-            mod = mod_result.scalar_one_or_none()
-            if mod:
-                cim = CartItemModifier(
-                    cart_item_id=cart_item.id,
-                    modifier_id=mod_id,
-                    modifier_name_snapshot=mod.name,
-                    price_delta_snapshot=mod.price_delta,
-                )
-                db.add(cim)
+    if cart_item:
+        cart_item.quantity += quantity
+        cart_item.line_total = float(_round2(Decimal(str(cart_item.unit_price)) * cart_item.quantity))
+    else:
+        unit_price = menu_item.base_price
+        if variant_id:
+            v_result = await db.execute(select(MenuItemVariant).where(MenuItemVariant.id == variant_id))
+            variant = v_result.scalar_one_or_none()
+            if variant:
+                unit_price = variant.price
+
+        cart_item = CartItem(
+            cart_id=cart.id,
+            menu_item_id=menu_item_id,
+            variant_id=variant_id,
+            quantity=quantity,
+            unit_price=unit_price,
+            notes=notes,
+            line_total=float(_round2(Decimal(str(unit_price)) * quantity)),
+        )
+        db.add(cart_item)
+        await db.flush()
+
+        if modifier_ids:
+            for mod_id in modifier_ids:
+                mod_result = await db.execute(select(MenuModifier).where(MenuModifier.id == mod_id))
+                mod = mod_result.scalar_one_or_none()
+                if mod:
+                    cim = CartItemModifier(
+                        cart_item_id=cart_item.id,
+                        modifier_id=mod_id,
+                        modifier_name_snapshot=mod.name,
+                        price_delta_snapshot=mod.price_delta,
+                    )
+                    db.add(cim)
 
     await db.flush()
+    await recalculate_cart(cart, db)
+    await db.commit()
+    return cart
+
+
+async def update_cart_item_quantity(cart_item_id: uuid.UUID, delta: int, db: AsyncSession) -> Cart:
+    """Increment (+1) or decrement (-1) quantity. Deletes if quantity reaches 0."""
+    result = await db.execute(select(CartItem).where(CartItem.id == cart_item_id))
+    ci = result.scalar_one_or_none()
+    if not ci:
+        raise ValueError("Item not in cart")
+    
+    ci.quantity += delta
+    if ci.quantity <= 0:
+        await db.delete(ci)
+    else:
+        ci.line_total = float(_round2(Decimal(str(ci.unit_price)) * ci.quantity))
+    
+    await db.flush()
+    cart_result = await db.execute(select(Cart).where(Cart.id == ci.cart_id))
+    cart = cart_result.scalar_one()
+    
     await recalculate_cart(cart, db)
     await db.commit()
     return cart
