@@ -162,3 +162,48 @@ async def billing_history(branch_id: uuid.UUID, db: AsyncSession = Depends(get_d
         .limit(100)
     )
     return result.scalars().all()
+
+
+@router.get("/today")
+async def today_transactions(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Return ALL bills (paid + unpaid) for today for this branch — for the transaction monitor."""
+    from app.models.tenancy import Table as TableModel
+    from datetime import date
+
+    today = date.today()
+
+    result = await db.execute(
+        select(Bill)
+        .where(
+            Bill.branch_id == branch_id,
+            cast(Bill.created_at, Date) == today,
+        )
+        .order_by(Bill.created_at.desc())
+        .options(selectinload(Bill.session).selectinload(TableSession.customer))
+    )
+    bills = result.scalars().all()
+
+    # Enrich with table number
+    output = []
+    for bill in bills:
+        table_number = None
+        if bill.table_id:
+            t_res = await db.execute(select(TableModel).where(TableModel.id == bill.table_id))
+            t = t_res.scalar_one_or_none()
+            table_number = t.table_number if t else None
+
+        output.append({
+            "id": str(bill.id),
+            "bill_number": bill.bill_number,
+            "table_id": str(bill.table_id),
+            "table_number": table_number,
+            "subtotal": float(bill.subtotal),
+            "cgst_amount": float(bill.cgst_amount),
+            "sgst_amount": float(bill.sgst_amount),
+            "total": float(bill.total),
+            "status": bill.status,
+            "created_at": bill.created_at.isoformat() if bill.created_at else None,
+            "closed_at": bill.closed_at.isoformat() if bill.closed_at else None,
+        })
+
+    return output

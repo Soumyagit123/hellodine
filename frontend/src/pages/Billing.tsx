@@ -5,14 +5,14 @@ type Bill = {
     id: string;
     bill_number: string;
     table_id: string;
+    table_number?: string;
     subtotal: number;
     cgst_amount: number;
     sgst_amount: number;
-    service_charge: number;
-    discount: number;
     total: number;
     status: string;
     created_at: string;
+    closed_at: string | null;
 };
 
 function PayModal({ bill, onClose, onPaid }: { bill: Bill; onClose: () => void; onPaid: () => void }) {
@@ -46,8 +46,7 @@ function PayModal({ bill, onClose, onPaid }: { bill: Bill; onClose: () => void; 
 
                 <div style={{ background: "var(--bg-base)", borderRadius: 8, padding: "14px", marginBottom: 20 }}>
                     <div className="flex justify-between text-sm"><span className="text-muted">Subtotal</span><span>₹{Number(bill.subtotal).toFixed(2)}</span></div>
-                    <div className="flex justify-between text-sm mt-1"><span className="text-muted">CGST</span><span>₹{Number(bill.cgst_amount).toFixed(2)}</span></div>
-                    <div className="flex justify-between text-sm mt-1"><span className="text-muted">SGST</span><span>₹{Number(bill.sgst_amount).toFixed(2)}</span></div>
+                    <div className="flex justify-between text-sm mt-1"><span className="text-muted">GST</span><span>₹{(Number(bill.cgst_amount) + Number(bill.sgst_amount)).toFixed(2)}</span></div>
                     <div className="flex justify-between mt-2" style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
                         <span style={{ fontWeight: 700 }}>Total</span>
                         <span style={{ fontWeight: 800, color: "var(--green)", fontSize: "1.1rem" }}>₹{Number(bill.total).toFixed(2)}</span>
@@ -90,65 +89,152 @@ export default function Billing() {
     const [bills, setBills] = useState<Bill[]>([]);
     const [selected, setSelected] = useState<Bill | null>(null);
     const [loading, setLoading] = useState(true);
+    const [activeTab, setActiveTab] = useState<"UNPAID" | "ALL">("UNPAID");
 
     async function fetchBills() {
+        setLoading(true);
         const staff = JSON.parse(localStorage.getItem("hd_staff") || "{}");
         if (!staff.branch_id) return;
-        // We fetch branch tables then their open bills
-        const tablesRes = await api.get(`/admin/tables?branch_id=${staff.branch_id}`);
-        const allBills: Bill[] = [];
-        for (const table of tablesRes.data) {
-            try {
-                const res = await api.get(`/billing/table/${table.id}/open`);
-                allBills.push(...res.data);
-            } catch { }
+
+        try {
+            // New endpoint fetches BOTH paid and unpaid for today
+            const res = await api.get(`/billing/today?branch_id=${staff.branch_id}`);
+            setBills(res.data);
+        } catch (e) {
+            console.error("Failed to fetch billing transactions:", e);
+        } finally {
+            setLoading(false);
         }
-        setBills(allBills);
-        setLoading(false);
     }
 
     useEffect(() => { fetchBills(); }, []);
 
-    if (loading) return <div className="text-muted">Loading bills…</div>;
+    const unpaidBills = bills.filter(b => b.status === "UNPAID");
+    const totalTodayRevenue = bills.filter(b => b.status === "PAID").reduce((sum, b) => sum + Number(b.total), 0);
 
     return (
         <div>
-            <div className="page-header">
+            <div className="page-header" style={{ marginBottom: 16 }}>
                 <div>
-                    <h1 className="page-title">Billing</h1>
-                    <p className="page-sub">{bills.length} unpaid table(s)</p>
+                    <h1 className="page-title">Billing & Transactions</h1>
+                    <p className="page-sub">Monitor all today's payments and open tables</p>
                 </div>
-                <button className="btn btn-outline btn-sm" onClick={fetchBills}>Refresh</button>
+                <div className="flex gap-2">
+                    <button className="btn btn-outline btn-sm" onClick={fetchBills}>🔄 Refresh</button>
+                </div>
             </div>
 
-            {bills.length === 0 && (
-                <div className="card" style={{ textAlign: "center", padding: 40 }}>
-                    <p style={{ fontSize: "2rem" }}>🎉</p>
-                    <p className="text-muted mt-2">No unpaid bills right now.</p>
+            {/* TABS */}
+            <div style={{ display: "flex", gap: 10, marginBottom: 24, borderBottom: "1px solid var(--border)" }}>
+                <button
+                    onClick={() => setActiveTab("UNPAID")}
+                    style={{
+                        padding: "10px 20px",
+                        background: "none",
+                        border: "none",
+                        borderBottom: activeTab === "UNPAID" ? "3px solid var(--primary)" : "3px solid transparent",
+                        color: activeTab === "UNPAID" ? "var(--primary)" : "var(--text)",
+                        fontWeight: activeTab === "UNPAID" ? 700 : 500,
+                        cursor: "pointer",
+                        fontSize: "1rem"
+                    }}
+                >
+                    Pending Payments ({unpaidBills.length})
+                </button>
+                <button
+                    onClick={() => setActiveTab("ALL")}
+                    style={{
+                        padding: "10px 20px",
+                        background: "none",
+                        border: "none",
+                        borderBottom: activeTab === "ALL" ? "3px solid var(--primary)" : "3px solid transparent",
+                        color: activeTab === "ALL" ? "var(--primary)" : "var(--text)",
+                        fontWeight: activeTab === "ALL" ? 700 : 500,
+                        cursor: "pointer",
+                        fontSize: "1rem"
+                    }}
+                >
+                    Today's Transactions
+                </button>
+            </div>
+
+            {loading ? (
+                <div className="text-muted">Loading transactions…</div>
+            ) : activeTab === "UNPAID" ? (
+                /* UNPAID TILE VIEW */
+                <>
+                    {unpaidBills.length === 0 && (
+                        <div className="card" style={{ textAlign: "center", padding: 40 }}>
+                            <p style={{ fontSize: "2rem" }}>🎉</p>
+                            <p className="text-muted mt-2">No pending bills right now.</p>
+                        </div>
+                    )}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
+                        {unpaidBills.map((bill) => (
+                            <div key={bill.id} className="card" style={{ cursor: "pointer", border: "1px solid rgba(255,95,87,0.3)" }} onClick={() => setSelected(bill)}>
+                                <div className="flex justify-between items-center">
+                                    <span style={{ fontWeight: 800, fontSize: "1.1rem" }}>{bill.bill_number}</span>
+                                    <span className="badge" style={{ background: "rgba(255,95,87,0.1)", color: "var(--red)" }}>UNPAID</span>
+                                </div>
+                                <div className="text-muted text-sm mt-1">Table: {bill.table_number || bill.table_id.slice(-6)}</div>
+                                <div style={{ marginTop: 16, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+                                    <div className="flex justify-between text-sm"><span className="text-muted">Subtotal</span><span>₹{Number(bill.subtotal).toFixed(2)}</span></div>
+                                    <div className="flex justify-between text-sm mt-1"><span className="text-muted">GST</span><span>₹{(Number(bill.cgst_amount) + Number(bill.sgst_amount)).toFixed(2)}</span></div>
+                                    <div className="flex justify-between mt-2" style={{ fontWeight: 800, fontSize: "1.2rem", color: "var(--text)" }}>
+                                        <span>Total</span><span>₹{Number(bill.total).toFixed(2)}</span>
+                                    </div>
+                                </div>
+                                <button className="btn btn-success" style={{ width: "100%", marginTop: 14, justifyContent: "center" }}>
+                                    💳 Mark as Paid
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </>
+            ) : (
+                /* ALL TRANSACTIONS LIST VIEW */
+                <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+                    <div style={{ padding: "16px 20px", background: "rgba(52,199,89,0.05)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <h3 style={{ margin: 0, fontSize: "1.1rem" }}>Daily Revenue</h3>
+                        <span style={{ fontSize: "1.4rem", fontWeight: 800, color: "var(--green)" }}>₹{totalTodayRevenue.toFixed(2)}</span>
+                    </div>
+                    {bills.length === 0 ? (
+                        <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>No transactions today yet.</div>
+                    ) : (
+                        <div style={{ overflowX: "auto" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
+                                <thead>
+                                    <tr style={{ borderBottom: "2px solid var(--border)", background: "var(--bg-base)" }}>
+                                        <th style={{ padding: "12px 20px", color: "var(--muted)", fontWeight: 600, fontSize: "0.85rem", textTransform: "uppercase" }}>Time</th>
+                                        <th style={{ padding: "12px 20px", color: "var(--muted)", fontWeight: 600, fontSize: "0.85rem", textTransform: "uppercase" }}>Bill #</th>
+                                        <th style={{ padding: "12px 20px", color: "var(--muted)", fontWeight: 600, fontSize: "0.85rem", textTransform: "uppercase" }}>Table</th>
+                                        <th style={{ padding: "12px 20px", color: "var(--muted)", fontWeight: 600, fontSize: "0.85rem", textTransform: "uppercase" }}>Amount</th>
+                                        <th style={{ padding: "12px 20px", color: "var(--muted)", fontWeight: 600, fontSize: "0.85rem", textTransform: "uppercase" }}>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {bills.map(b => (
+                                        <tr key={b.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                                            <td style={{ padding: "12px 20px", fontSize: "0.9rem" }}>
+                                                {new Date(b.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                            </td>
+                                            <td style={{ padding: "12px 20px", fontWeight: 600 }}>{b.bill_number}</td>
+                                            <td style={{ padding: "12px 20px" }}>{b.table_number || "Takeaway"}</td>
+                                            <td style={{ padding: "12px 20px", fontWeight: 700 }}>₹{Number(b.total).toFixed(2)}</td>
+                                            <td style={{ padding: "12px 20px" }}>
+                                                {b.status === "PAID"
+                                                    ? <span className="badge" style={{ background: "rgba(52,199,89,0.15)", color: "var(--green)" }}>PAID</span>
+                                                    : <span className="badge" style={{ background: "rgba(255,95,87,0.15)", color: "var(--red)" }}>UNPAID</span>
+                                                }
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
                 </div>
             )}
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
-                {bills.map((bill) => (
-                    <div key={bill.id} className="card" style={{ cursor: "pointer" }} onClick={() => setSelected(bill)}>
-                        <div className="flex justify-between items-center">
-                            <span style={{ fontWeight: 700, fontSize: "1.1rem" }}>{bill.bill_number}</span>
-                            <span className="badge" style={{ background: "rgba(255,95,87,0.15)", color: "var(--red)" }}>UNPAID</span>
-                        </div>
-                        <div className="text-muted text-sm mt-1">Table: {bill.table_id.slice(-6)}</div>
-                        <div style={{ marginTop: 16, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-                            <div className="flex justify-between text-sm"><span className="text-muted">Subtotal</span><span>₹{Number(bill.subtotal).toFixed(2)}</span></div>
-                            <div className="flex justify-between text-sm mt-1"><span className="text-muted">GST</span><span>₹{(Number(bill.cgst_amount) + Number(bill.sgst_amount)).toFixed(2)}</span></div>
-                            <div className="flex justify-between mt-2" style={{ fontWeight: 800, fontSize: "1.1rem", color: "var(--green)" }}>
-                                <span>Total</span><span>₹{Number(bill.total).toFixed(2)}</span>
-                            </div>
-                        </div>
-                        <button className="btn btn-success" style={{ width: "100%", marginTop: 14, justifyContent: "center" }}>
-                            💳 Mark as Paid
-                        </button>
-                    </div>
-                ))}
-            </div>
 
             {selected && (
                 <PayModal bill={selected} onClose={() => setSelected(null)} onPaid={() => { setSelected(null); fetchBills(); }} />
