@@ -75,6 +75,17 @@ async def intent_router(state: BotState) -> BotState:
         state["intent"] = "BROWSE"
         return state
 
+    # Confirm / Place order keywords (must come BEFORE LLM to prevent misclassification)
+    confirm_triggers = ["confirm", "place order", "yes", "haan", "haa", "order karo", "ok confirm", "place", "finalize", "checkout"]
+    if any(lower == t or lower.startswith(t) for t in confirm_triggers):
+        state["intent"] = "CONFIRM_SUMMARY"
+        return state
+
+    # Bill triggers
+    if lower in ("bill", "bill do", "check", "pay", "payment"):
+        state["intent"] = "BILL"
+        return state
+
     if lower.startswith("item_add_"):
         state["intent"] = "ADD_ITEM"
         state["entities"] = {"item_id": lower.replace("item_add_", ""), "quantity": 1}

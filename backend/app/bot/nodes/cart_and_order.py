@@ -127,14 +127,14 @@ async def cart_executor(state: BotState) -> BotState:
                 state["loop_prefix"] = f"✅ Added: {added_names[0]}"
                 return state
 
-            # If it was a text-based NLP order, just show a summary
+            # If it was a text-based NLP order, show a summary with Confirm button
             state["final_response"] = {
                 "type": "buttons",
-                "body": f"✅ Added: {', '.join(added_names)}\n\n🛒 Cart Total: *₹{cart.total:.2f}*",
+                "body": f"✅ Added: {', '.join(added_names)}\n\n🛒 Cart Total: *₹{cart.total:.2f}*\n\nReady to order? Tap Confirm! 👇",
                 "buttons": [
+                    {"id": "confirm_order", "title": "✅ Confirm Order"},
                     {"id": "show_menu", "title": "Add More 📋"},
                     {"id": "view_cart", "title": "Review Cart 🛒"},
-                    {"id": "confirm_order", "title": "Checkout ✅"},
                 ],
             }
             return state
@@ -162,9 +162,7 @@ async def cart_executor(state: BotState) -> BotState:
                 "type": "text",
                 "body": f"✅ Removed *{item_name}* from cart.\n🛒 Cart total: *₹{cart.total:.2f}*",
             }
-        return state
-
-    return state
+            return state
 
     return state
 

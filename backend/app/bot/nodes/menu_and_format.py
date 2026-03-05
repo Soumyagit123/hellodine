@@ -52,11 +52,16 @@ async def menu_retrieval(state: BotState) -> BotState:
                     print(f"Cart status feedback error: {e}")
 
                 rows = []
-                # 0. Global Review & Checkout at the Top
+                # 0. Confirm & Checkout at the Top (most prominent action)
+                rows.append({
+                    "id": "confirm_order",
+                    "title": "✅ Confirm & Place Order",
+                    "description": f"Place your order now! ({cart_total:.0f} total)"
+                })
                 rows.append({
                     "id": "view_cart",
-                    "title": "✅ Finish & Checkout",
-                    "description": f"Ready to order? ({cart_total:.0f} total)"
+                    "title": "🛒 View Cart",
+                    "description": "See items in your cart"
                 })
 
                 for item in items[:8]: # Show 8 items + Checkout + Back

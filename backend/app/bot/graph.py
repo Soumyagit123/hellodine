@@ -30,7 +30,7 @@ def route_after_intent(state: BotState) -> str:
     # 3. Cart / Order
     if intent in ("ADD_ITEM", "REMOVE_ITEM", "UPDATE_QTY", "CART_VIEW"):
         return "cart_executor"
-    if intent == "CONFIRM_SUMMARY":
+    if intent in ("CONFIRM_SUMMARY", "CONFIRM"):  # CONFIRM is AI alias for CONFIRM_SUMMARY
         return "checkout_guard"
     if intent == "PLACE_ORDER":
         return "kitchen_dispatch"
