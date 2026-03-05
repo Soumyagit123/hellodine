@@ -15,7 +15,7 @@ from app.services.ws_manager import manager
 
 from app.bot.wa_sender import send_text
 from app.models.tenancy import Restaurant, Branch
-from app.models.customers import TableSession
+from app.models.customers import TableSession, Customer
 from app.config import settings
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
@@ -80,7 +80,7 @@ async def update_status(order_id: uuid.UUID, data: StatusUpdateRequest, db: Asyn
     result = await db.execute(
         select(Order)
         .where(Order.id == order_id)
-        .options(selectinload(Order.session))
+        .options(selectinload(Order.session).selectinload(TableSession.customer))
     )
     order = result.scalar_one_or_none()
     if not order:
@@ -111,7 +111,8 @@ async def update_status(order_id: uuid.UUID, data: StatusUpdateRequest, db: Asyn
                 wa_phone_id = (restaurant.whatsapp_phone_number_id if restaurant else None) or settings.WA_PHONE_NUMBER_ID
                 wa_token = (restaurant.whatsapp_access_token if restaurant else None) or settings.WA_ACCESS_TOKEN
                 
-                raw_phone = order.session.customer_phone
+                # customer.wa_user_id holds the WhatsApp phone number
+                raw_phone = order.session.customer.wa_user_id if order.session and order.session.customer else None
                 if raw_phone and wa_phone_id and wa_token:
                     # Meta API requires digits-only phone numbers (no +)
                     customer_phone = "".join(filter(str.isdigit, raw_phone))
