@@ -262,7 +262,6 @@ async def transactions_by_date(
             Bill.created_at <= end_of_day,
         )
         .order_by(Bill.created_at.desc())
-        .options(selectinload(Bill.session).selectinload(TableSession.customer))
     )
     bills = result.scalars().all()
 
