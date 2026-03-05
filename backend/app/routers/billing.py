@@ -126,6 +126,9 @@ async def daily_report(branch_id: uuid.UUID, date: str, db: AsyncSession = Depen
     # Parse the incoming "YYYY-MM-DD" string
     target_date = datetime.strptime(date, "%Y-%m-%d").date()
     
+    start_of_day = datetime.combine(target_date, datetime.min.time()).astimezone(timezone.utc)
+    end_of_day = datetime.combine(target_date, datetime.max.time()).astimezone(timezone.utc)
+    
     result = await db.execute(
         select(
             func.count(Bill.id).label("total_bills"),
@@ -135,7 +138,8 @@ async def daily_report(branch_id: uuid.UUID, date: str, db: AsyncSession = Depen
         ).where(
             Bill.branch_id == branch_id,
             Bill.status == BillStatus.PAID,
-            cast(Bill.created_at, Date) == target_date,
+            Bill.created_at >= start_of_day,
+            Bill.created_at <= end_of_day,
         )
     )
     row = result.one()
@@ -145,6 +149,73 @@ async def daily_report(branch_id: uuid.UUID, date: str, db: AsyncSession = Depen
         "total_revenue": float(row.total_revenue or 0),
         "total_cgst": float(row.total_cgst or 0),
         "total_sgst": float(row.total_sgst or 0),
+    }
+
+
+@router.get("/report/dashboard")
+async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Comprehensive Corporate Analytics Dashboard API."""
+    from datetime import date as dt_date, datetime, timezone, timedelta
+    
+    today = dt_date.today()
+    
+    # 1. Define Time Ranges (UTC Aware)
+    start_of_today = datetime.combine(today, datetime.min.time()).astimezone(timezone.utc)
+    end_of_today = datetime.combine(today, datetime.max.time()).astimezone(timezone.utc)
+    
+    start_of_month = datetime.combine(today.replace(day=1), datetime.min.time()).astimezone(timezone.utc)
+    
+    # 2. Base Query helper
+    async def get_metrics(start_time=None, end_time=None):
+        q = select(
+            func.count(Bill.id).label("total_bills"),
+            func.sum(Bill.total).label("total_revenue"),
+            func.sum(Bill.cgst_amount).label("total_cgst"),
+            func.sum(Bill.sgst_amount).label("total_sgst"),
+        ).where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID)
+        
+        if start_time: q = q.where(Bill.created_at >= start_time)
+        if end_time: q = q.where(Bill.created_at <= end_time)
+            
+        res = await db.execute(q)
+        row = res.one()
+        return {
+            "total_bills": row.total_bills or 0,
+            "total_revenue": float(row.total_revenue or 0),
+            "total_cgst": float(row.total_cgst or 0),
+            "total_sgst": float(row.total_sgst or 0),
+        }
+
+    # 3. Fetch Aggregate Blocks
+    today_stats = await get_metrics(start_of_today, end_of_today)
+    mtd_stats = await get_metrics(start_of_month, end_of_today)
+    all_time_stats = await get_metrics(None, None)
+
+    # 4. Generate 7-Day Trend Array for Chart.js
+    trend_data = []
+    for i in range(6, -1, -1):
+        d = today - timedelta(days=i)
+        st = datetime.combine(d, datetime.min.time()).astimezone(timezone.utc)
+        et = datetime.combine(d, datetime.max.time()).astimezone(timezone.utc)
+        
+        # Single day fast query
+        r = await db.execute(
+            select(func.sum(Bill.total).label("rev"), func.count(Bill.id).label("cnt"))
+            .where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID, Bill.created_at >= st, Bill.created_at <= et)
+        )
+        day_row = r.one()
+        trend_data.append({
+            "date": d.strftime("%b %d"),
+            "revenue": float(day_row.rev or 0),
+            "orders": day_row.cnt or 0
+        })
+
+    return {
+        "ok": True,
+        "today": today_stats,
+        "month": mtd_stats,
+        "all_time": all_time_stats,
+        "trend_7d": trend_data
     }
 
 
@@ -179,11 +250,16 @@ async def transactions_by_date(
     else:
         target_date = dt_date.today()
 
+    # Create a timezone-aware range for the whole target day
+    start_of_day = datetime.combine(target_date, datetime.min.time()).astimezone(timezone.utc)
+    end_of_day = datetime.combine(target_date, datetime.max.time()).astimezone(timezone.utc)
+
     result = await db.execute(
         select(Bill)
         .where(
             Bill.branch_id == branch_id,
-            cast(Bill.created_at, Date) == target_date,
+            Bill.created_at >= start_of_day,
+            Bill.created_at <= end_of_day,
         )
         .order_by(Bill.created_at.desc())
         .options(selectinload(Bill.session).selectinload(TableSession.customer))
