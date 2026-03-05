@@ -93,7 +93,23 @@ async def intent_router(state: BotState) -> BotState:
 
     if lower.startswith("cat_"):
         state["intent"] = "BROWSE"
-        state["entities"] = {"category_id": lower.replace("cat_", "")}
+        state["entities"] = {"category_id": lower.replace("cat_", ""), "page": 0}
+        return state
+
+    if lower.startswith("next_page_") or lower.startswith("prev_page_"):
+        # Format: next_page_items_CATEGORYID_PAGE
+        # or next_page_cats_PAGE
+        parts = lower.split("_")
+        state["intent"] = "BROWSE"
+        if "items" in parts:
+            state["entities"] = {
+                "category_id": parts[3], 
+                "page": int(parts[4])
+            }
+        else:
+            state["entities"] = {
+                "page": int(parts[3])
+            }
         return state
         
     # 2. Hardcoded Order Keywords (Priority)

@@ -11,11 +11,14 @@ VEG_EMOJI = {"veg": "🟢", "nonveg": "🔴", "jain": "🌿"}
 SPICE_EMOJI = {"mild": "🌶", "medium": "🌶🌶", "hot": "🌶🌶🌶"}
 
 
+
 async def menu_retrieval(state: BotState) -> BotState:
-    """Fetch menu categories or items and prepare response payload."""
+    """Fetch menu categories or items and prepare response payload with 10-row limit safety."""
     branch_id = state.get("branch_id")
     entities = state.get("entities", {})
-    item_name_hint = (entities.get("item_name") or "").lower()
+    page = int(entities.get("page") or 0)
+    PAGE_SIZE_ITEMS = 6
+    PAGE_SIZE_CATS = 9
 
     if not branch_id:
         state["error"] = "no_branch_id"
@@ -30,72 +33,69 @@ async def menu_retrieval(state: BotState) -> BotState:
                     select(MenuItem).where(
                         MenuItem.category_id == uuid.UUID(cat_id),
                         MenuItem.is_available == True
-                    )
+                    ).order_by(MenuItem.name)
                 )
-                items = items_result.scalars().all()
-                if not items:
+                all_items = items_result.scalars().all()
+                if not all_items:
                     state["final_response"] = {"type": "text", "body": "No items found in this category. 📋"}
                     return state
 
-                # Get current cart count for friendly feedback
-                cart_status = ""
+                # Pagination
+                start = page * PAGE_SIZE_ITEMS
+                end = start + PAGE_SIZE_ITEMS
+                items = all_items[start:end]
+                has_next = len(all_items) > end
+                has_prev = page > 0
+
+                # Get cart info
                 cart_total = 0
                 try:
                     cart_res = await db.execute(select(Cart).where(Cart.session_id == uuid.UUID(state["session_id"]), Cart.status == CartStatus.OPEN))
                     cart = cart_res.scalar_one_or_none()
-                    if cart and cart.total > 0:
-                        item_count_res = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
-                        count = sum(ci.quantity for ci in item_count_res.scalars().all())
-                        cart_status = f"🛒 In Cart: {count} items (₹{cart.total:.0f})\n"
-                        cart_total = cart.total
-                except Exception as e:
-                    print(f"Cart status feedback error: {e}")
+                    if cart: cart_total = float(cart.total)
+                except: pass
 
                 rows = []
-                # 0. Confirm & Checkout at the Top (most prominent action)
-                rows.append({
-                    "id": "confirm_order",
-                    "title": "✅ Confirm & Place Order",
-                    "description": f"Place your order now! ({cart_total:.0f} total)"
-                })
-                rows.append({
-                    "id": "view_cart",
-                    "title": "🛒 View Cart",
-                    "description": "See items in your cart"
-                })
+                # Max 10 rows total
+                rows.append({"id": "confirm_order", "title": "✅ Checkout & Place Order", "description": f"Total: ₹{cart_total:.0f}"})
+                rows.append({"id": "view_cart", "title": "🛒 View Cart", "description": "Edit your items"})
 
-                for item in items[:8]: # Show 8 items + Checkout + Back
+                for item in items:
                     veg = VEG_EMOJI["veg"] if item.is_veg else VEG_EMOJI["nonveg"]
-                    title = f"{veg} {item.name}"[:24]
                     rows.append({
                         "id": f"item_add_{item.id}",
-                        "title": title,
+                        "title": f"{veg} {item.name}"[:24],
                         "description": f"₹{item.base_price:.0f}",
                     })
                 
-                # Navigation Link
-                rows.append({
-                    "id": "show_menu",
-                    "title": "🔙 All Categories",
-                    "description": "View other menu sections"
-                })
+                # Navigation Rows (Row 10 or 9&10)
+                if has_next:
+                    rows.append({
+                        "id": f"next_page_items_{cat_id}_{page+1}",
+                        "title": "➡️ Next Page",
+                        "description": f"See more ({len(all_items) - end} items left)"
+                    })
+                
+                if has_prev:
+                    rows.append({
+                        "id": f"prev_page_items_{cat_id}_{page-1}",
+                        "title": "⬅️ Previous Page",
+                        "description": "Go back"
+                    })
 
-                prefix = state.pop("loop_prefix", "")
-                body = f"{cart_status}Select items to add: 👇\n\n💡 Tip: Just type *'2 burgers and 1 coke'* to add multiple items at once!"
-                if prefix:
-                    body = f"{prefix}\n\n{body}"
+                rows.append({"id": "show_menu", "title": "🔙 All Categories", "description": "Browse sections"})
 
                 state["final_response"] = {
                     "type": "list",
-                    "body": body,
+                    "body": f"Select items (Page {page+1}): 👇\n💡 Tip: Add multiple at once like *'2 burgers, 1 coke'*",
                     "button_label": "View Items",
-                    "sections": [{"title": "Category Items", "rows": rows}],
+                    "sections": [{"title": "Delicious Food", "rows": rows[:10]}], # Force 10 rows
                 }
                 return state
-            except (ValueError, Exception) as e:
+            except Exception as e:
                 print(f"Error fetching category items: {e}")
 
-        # 2. Veg / Non-Veg search filter
+        # 2. Veg / Non-Veg search filter (STRICT LIMIT)
         is_veg_filter = entities.get("is_veg")
         if is_veg_filter is not None:
             items_result = await db.execute(
@@ -103,28 +103,28 @@ async def menu_retrieval(state: BotState) -> BotState:
                     MenuItem.branch_id == uuid.UUID(branch_id),
                     MenuItem.is_veg == is_veg_filter,
                     MenuItem.is_available == True
-                )
+                ).limit(10)
             )
             items = items_result.scalars().all()
             if not items:
-                state["final_response"] = {"type": "text", "body": f"Sorry, couldn't find any {'veg' if is_veg_filter else 'non-veg'} items content. 📋"}
+                state["final_response"] = {"type": "text", "body": f"No {'veg' if is_veg_filter else 'non-veg'} items found. 📋"}
                 return state
 
             rows = []
-            for item in items[:10]:
+            for item in items:
                 veg = VEG_EMOJI["veg"] if item.is_veg else VEG_EMOJI["nonveg"]
-                title = f"{veg} {item.name}"[:24]
-                rows.append({"id": f"item_add_{item.id}", "title": title, "description": f"₹{item.base_price:.0f}"})
+                rows.append({"id": f"item_add_{item.id}", "title": f"{veg} {item.name}"[:24], "description": f"₹{item.base_price:.0f}"})
             
             state["final_response"] = {
                 "type": "list",
-                "body": f"Here are our {'Veg' if is_veg_filter else 'Non-Veg'} items: 👇",
+                "body": f"Our {'Veg' if is_veg_filter else 'Non-Veg'} menu: 👇",
                 "button_label": "View Items",
-                "sections": [{"title": "Filter Results", "rows": rows}],
+                "sections": [{"title": "Results", "rows": rows[:10]}],
             }
             return state
 
-        # 3. Fuzzy search for item hint
+        # 3. Fuzzy search for item hint (STRICT LIMIT)
+        item_name_hint = (entities.get("item_name") or "").lower()
         if item_name_hint:
             items_result = await db.execute(
                 select(MenuItem).where(
@@ -133,50 +133,58 @@ async def menu_retrieval(state: BotState) -> BotState:
                 )
             )
             all_items = items_result.scalars().all()
-            matched = [i for i in all_items if item_name_hint in i.name.lower()]
+            matched = [i for i in all_items if item_name_hint in i.name.lower()][:10]
             if not matched:
-                matched = all_items[:10]  # fallback: show first 10
-
-            if not matched:
-                state["final_response"] = {"type": "text", "body": "Sorry, no items are available at the moment. 📋"}
+                state["final_response"] = {"type": "text", "body": "Sorry, item not available. 📋"}
                 return state
 
             rows = []
-            for item in matched[:10]:
+            for item in matched:
                 veg = VEG_EMOJI["veg"] if item.is_veg else VEG_EMOJI["nonveg"]
-                spice = SPICE_EMOJI.get(item.spice_level, "") if item.spice_level else ""
-                title = f"{veg} {item.name}"[:24]
-                rows.append({
-                    "id": f"item_add_{item.id}",
-                    "title": title,
-                    "description": f"₹{item.base_price:.0f} {spice}",
-                })
+                rows.append({"id": f"item_add_{item.id}", "title": f"{veg} {item.name}"[:24], "description": f"₹{item.base_price:.0f}"})
             state["final_response"] = {
                 "type": "list",
-                "body": "Here are the matching items 👇\nTap one to add it to cart:",
+                "body": "Matching items found: 👇",
                 "button_label": "View Items",
-                "sections": [{"title": "Menu Items", "rows": rows}],
+                "sections": [{"title": "Search", "rows": rows[:10]}],
             }
-        else:
-            # 4. Default: Show categories
-            cats_result = await db.execute(
-                select(MenuCategory).where(
-                    MenuCategory.branch_id == uuid.UUID(branch_id),
-                    MenuCategory.is_active == True,
-                ).order_by(MenuCategory.sort_order)
-            )
-            cats = cats_result.scalars().all()
-            if not cats:
-                state["final_response"] = {"type": "text", "body": "The menu is currently being updated. Please check back in a few minutes! 📋"}
-                return state
+            return state
 
-            rows = [{"id": f"cat_{c.id}", "title": c.name[:24], "description": f"~{c.estimated_prep_minutes} min" if c.estimated_prep_minutes else ""} for c in cats[:10]]
-            state["final_response"] = {
-                "type": "list",
-                "body": "📋 Our Menu Categories — tap to browse:",
-                "button_label": "Browse Menu",
-                "sections": [{"title": "Categories", "rows": rows}],
-            }
+        # 4. Default: Show categories (PAGINATED)
+        cats_result = await db.execute(
+            select(MenuCategory).where(
+                MenuCategory.branch_id == uuid.UUID(branch_id),
+                MenuCategory.is_active == True,
+            ).order_by(MenuCategory.sort_order)
+        )
+        all_cats = cats_result.scalars().all()
+        if not all_cats:
+            state["final_response"] = {"type": "text", "body": "Menu coming soon! 📋"}
+            return state
+
+        start_c = page * PAGE_SIZE_CATS
+        end_c = start_c + PAGE_SIZE_CATS
+        cats = all_cats[start_c:end_c]
+        has_next_c = len(all_cats) > end_c
+
+        rows_c = [{"id": f"cat_{c.id}", "title": c.name[:24], "description": "Browse section"} for c in cats]
+        
+        if has_next_c:
+            rows_c = rows_c[:9] # Keep row 10 for Next
+            rows_c.append({
+                "id": f"next_page_cats_{page+1}",
+                "title": "➡️ Next Categories",
+                "description": f"More sections available"
+            })
+        elif page > 0:
+            rows_c.append({"id": f"prev_page_cats_{page-1}", "title": "⬅️ Previous Page", "description": "Go back"})
+
+        state["final_response"] = {
+            "type": "list",
+            "body": "📋 Browse Menu (Page {}):".format(page + 1),
+            "button_label": "Choose Category",
+            "sections": [{"title": "Categories", "rows": rows_c[:10]}],
+        }
     return state
 
 
