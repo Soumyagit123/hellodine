@@ -9,7 +9,7 @@ from app.config import settings
 
 # Configure Google AI
 genai.configure(api_key=settings.GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 async def restaurant_chat(state: BotState) -> BotState:
     """Answers general questions about the restaurant using native Google AI library."""
