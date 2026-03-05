@@ -58,7 +58,12 @@ async def list_orders(
     q = select(Order).where(Order.branch_id == branch_id)
     if status:
         q = q.where(Order.status == status)
-    q = q.options(selectinload(Order.items).selectinload(OrderItem.modifiers)).order_by(Order.created_at.desc())
+    q = q.options(
+        selectinload(Order.table),
+        selectinload(Order.items).selectinload(OrderItem.menu_item),
+        selectinload(Order.items).selectinload(OrderItem.variant),
+        selectinload(Order.items).selectinload(OrderItem.modifiers)
+    ).order_by(Order.created_at.desc())
     result = await db.execute(q)
     return result.scalars().all()
 
@@ -67,7 +72,12 @@ async def list_orders(
 async def get_order(order_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Order).where(Order.id == order_id)
-        .options(selectinload(Order.items).selectinload(OrderItem.modifiers))
+        .options(
+            selectinload(Order.table),
+            selectinload(Order.items).selectinload(OrderItem.menu_item),
+            selectinload(Order.items).selectinload(OrderItem.variant),
+            selectinload(Order.items).selectinload(OrderItem.modifiers)
+        )
     )
     order = result.scalar_one_or_none()
     if not order:

@@ -28,10 +28,19 @@ type Order = {
     id: string;
     order_number: string;
     table_id: string;
+    table?: { table_number: number };
     status: string;
     total: number;
     created_at: string;
-    items: { id: string; quantity: number; notes: string | null; menu_item_id: string }[];
+    items: {
+        id: string;
+        quantity: number;
+        notes: string | null;
+        menu_item_id: string;
+        menu_item?: { name: string };
+        variant?: { name: string };
+        modifiers: { id: string; modifier_name_snapshot: string }[];
+    }[];
 };
 
 function OrderCard({ order, onStatusChange }: { order: Order; onStatusChange: () => void }) {
@@ -50,7 +59,7 @@ function OrderCard({ order, onStatusChange }: { order: Order; onStatusChange: ()
     }
 
     const elapsed = formatDistanceToNow(new Date(order.created_at), { addSuffix: false });
-    const tableLabel = order.table_id?.slice(-4) ?? "—";
+    const tableLabel = order.table?.table_number ?? order.table_id?.slice(-4) ?? "—";
 
     return (
         <div className="order-card">
@@ -62,9 +71,20 @@ function OrderCard({ order, onStatusChange }: { order: Order; onStatusChange: ()
 
             <div className="order-card-items">
                 {order.items.map((item) => (
-                    <div key={item.id}>
-                        <span>×{item.quantity}</span>{" "}
-                        <span style={{ color: "var(--text)" }}>{item.menu_item_id.slice(0, 8)}…</span>
+                    <div key={item.id} className="mb-2">
+                        <div className="flex justify-between">
+                            <span style={{ fontWeight: 600 }}>×{item.quantity} {item.menu_item?.name || item.menu_item_id.slice(0, 8)}</span>
+                        </div>
+                        {item.variant && (
+                            <div className="text-xs text-muted" style={{ marginLeft: "1.5rem" }}>
+                                ▫️ {item.variant.name}
+                            </div>
+                        )}
+                        {item.modifiers?.map(mod => (
+                            <div key={mod.id} className="text-xs text-muted" style={{ marginLeft: "1.5rem" }}>
+                                + {mod.modifier_name_snapshot}
+                            </div>
+                        ))}
                         {item.notes && (
                             <div className="order-card-note mt-1">📝 {item.notes}</div>
                         )}

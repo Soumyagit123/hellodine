@@ -36,6 +36,7 @@ class Order(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     session: Mapped["TableSession"] = relationship("TableSession", back_populates="orders")  # type: ignore
+    table: Mapped["Table"] = relationship("Table")
     items: Mapped[list["OrderItem"]] = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
 
 
@@ -53,6 +54,8 @@ class OrderItem(Base):
     line_total: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
 
     order: Mapped["Order"] = relationship("Order", back_populates="items")
+    menu_item: Mapped["MenuItem"] = relationship("MenuItem")
+    variant: Mapped["MenuItemVariant"] = relationship("MenuItemVariant")
     modifiers: Mapped[list["OrderItemModifier"]] = relationship("OrderItemModifier", back_populates="order_item", cascade="all, delete-orphan")
 
 
