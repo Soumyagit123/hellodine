@@ -164,19 +164,26 @@ async def billing_history(branch_id: uuid.UUID, db: AsyncSession = Depends(get_d
     return result.scalars().all()
 
 
-@router.get("/today")
-async def today_transactions(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Return ALL bills (paid + unpaid) for today for this branch — for the transaction monitor."""
+@router.get("/transactions")
+async def transactions_by_date(
+    branch_id: uuid.UUID, 
+    date: Optional[str] = None, 
+    db: AsyncSession = Depends(get_db)
+):
+    """Return ALL bills (paid + unpaid) for a specific date for this branch."""
     from app.models.tenancy import Table as TableModel
-    from datetime import date
+    from datetime import date as dt_date, datetime
 
-    today = date.today()
+    if date:
+        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+    else:
+        target_date = dt_date.today()
 
     result = await db.execute(
         select(Bill)
         .where(
             Bill.branch_id == branch_id,
-            cast(Bill.created_at, Date) == today,
+            cast(Bill.created_at, Date) == target_date,
         )
         .order_by(Bill.created_at.desc())
         .options(selectinload(Bill.session).selectinload(TableSession.customer))

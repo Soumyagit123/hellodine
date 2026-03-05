@@ -90,6 +90,7 @@ export default function Billing() {
     const [selected, setSelected] = useState<Bill | null>(null);
     const [loading, setLoading] = useState(true);
     const [activeTab, setActiveTab] = useState<"UNPAID" | "ALL">("UNPAID");
+    const [filterDate, setFilterDate] = useState<string>(new Date().toISOString().split("T")[0]);
 
     async function fetchBills() {
         setLoading(true);
@@ -97,8 +98,8 @@ export default function Billing() {
         if (!staff.branch_id) return;
 
         try {
-            // New endpoint fetches BOTH paid and unpaid for today
-            const res = await api.get(`/billing/today?branch_id=${staff.branch_id}`);
+            // Fetch BOTH paid and unpaid for the selected date
+            const res = await api.get(`/billing/transactions?branch_id=${staff.branch_id}&date=${filterDate}`);
             setBills(res.data);
         } catch (e) {
             console.error("Failed to fetch billing transactions:", e);
@@ -107,10 +108,10 @@ export default function Billing() {
         }
     }
 
-    useEffect(() => { fetchBills(); }, []);
+    useEffect(() => { fetchBills(); }, [filterDate]);
 
     const unpaidBills = bills.filter(b => b.status === "UNPAID");
-    const totalTodayRevenue = bills.filter(b => b.status === "PAID").reduce((sum, b) => sum + Number(b.total), 0);
+    const totalRevenue = bills.filter(b => b.status === "PAID").reduce((sum, b) => sum + Number(b.total), 0);
 
     return (
         <div>
@@ -154,7 +155,7 @@ export default function Billing() {
                         fontSize: "1rem"
                     }}
                 >
-                    Today's Transactions
+                    Transactions Dashboard
                 </button>
             </div>
 
@@ -194,12 +195,21 @@ export default function Billing() {
             ) : (
                 /* ALL TRANSACTIONS LIST VIEW */
                 <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-                    <div style={{ padding: "16px 20px", background: "rgba(52,199,89,0.05)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <h3 style={{ margin: 0, fontSize: "1.1rem" }}>Daily Revenue</h3>
-                        <span style={{ fontSize: "1.4rem", fontWeight: 800, color: "var(--green)" }}>₹{totalTodayRevenue.toFixed(2)}</span>
+                    <div style={{ padding: "16px 20px", background: "rgba(52,199,89,0.05)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 15 }}>
+                            <h3 style={{ margin: 0, fontSize: "1.1rem" }}>Daily Revenue</h3>
+                            <input
+                                type="date"
+                                className="input"
+                                style={{ padding: "6px 10px", margin: 0 }}
+                                value={filterDate}
+                                onChange={(e) => setFilterDate(e.target.value)}
+                            />
+                        </div>
+                        <span style={{ fontSize: "1.4rem", fontWeight: 800, color: "var(--green)" }}>₹{totalRevenue.toFixed(2)}</span>
                     </div>
                     {bills.length === 0 ? (
-                        <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>No transactions today yet.</div>
+                        <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>No transactions found for {filterDate}.</div>
                     ) : (
                         <div style={{ overflowX: "auto" }}>
                             <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
