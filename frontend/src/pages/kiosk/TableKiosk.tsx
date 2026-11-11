@@ -262,10 +262,12 @@ export default function TableKiosk() {
     const recognitionRef = useRef<any>(null);
     const voiceWaitTimerRef = useRef<any>(null);
     const voiceAccumulatedRef = useRef<string>("");
+    // Single-dispatch latch per speech session: ensures a voice turn can dispatch AT MOST ONCE
+    const voiceDispatchedForSessionRef = useRef<boolean>(false);
     // Guard against simultaneous or rapid duplicate chat sends (debounces voice + form submits)
     const chatInFlightRef = useRef<boolean>(false);
     const lastChatSubmissionTimeRef = useRef<number>(0);
-    const lastChatSubmissionTextRef = useRef<string>("");
+    const lastChatSubmissionNormRef = useRef<string>("");
 
     // Modals & Entertainment State
     const [showCartoonModal, setShowCartoonModal] = useState<boolean>(false);
@@ -857,13 +859,17 @@ export default function TableKiosk() {
         const messageText = (textToSend ?? chatInput).trim();
         if (!messageText || !sessionData?.session?.id) return;
 
-        // Debounce / duplicate submission lock: ignore if another call is currently in-flight
-        // or if the exact same message was submitted within the last 1500ms
+        // Normalize text (lowercase, strip trailing and surrounding punctuation/whitespace)
+        // so "Confirm order.", "Confirm order", "confirm order" are identical to duplicate checks
+        const normKey = messageText.toLowerCase().replace(/[.,!?'"~`\s]+/g, " ").trim();
         const now = Date.now();
+
+        // Debounce / duplicate submission lock: ignore if another call is currently in-flight
+        // or if the exact same message was submitted within the last 3000ms
         if (chatInFlightRef.current) return;
         if (
-            lastChatSubmissionTextRef.current === messageText &&
-            now - lastChatSubmissionTimeRef.current < 1500
+            lastChatSubmissionNormRef.current === normKey &&
+            now - lastChatSubmissionTimeRef.current < 3000
         ) {
             return;
         }
@@ -871,13 +877,25 @@ export default function TableKiosk() {
         // Lock in-flight chat calls
         chatInFlightRef.current = true;
         lastChatSubmissionTimeRef.current = now;
-        lastChatSubmissionTextRef.current = messageText;
+        lastChatSubmissionNormRef.current = normKey;
 
         // Clear any lingering voice silence timers to prevent voice onresult timeout from firing a second call
         if (voiceWaitTimerRef.current) {
             clearTimeout(voiceWaitTimerRef.current);
             voiceWaitTimerRef.current = null;
         }
+        // Stop and unbind speech recognition so it can't deliver more results for this turn
+        if (recognitionRef.current) {
+            try {
+                recognitionRef.current.onresult = null;
+                recognitionRef.current.onend = null;
+                recognitionRef.current.onerror = null;
+                recognitionRef.current.abort();
+            } catch {}
+            recognitionRef.current = null;
+        }
+        setIsListening(false);
+        setVoiceTranscriptNotice("");
 
         // Instant Fast Path for Order Confirmation: 0ms delay directly triggers kitchen dispatch
         const norm = messageText.toLowerCase();
@@ -980,31 +998,43 @@ export default function TableKiosk() {
             return;
         }
 
-        // If already listening, stopping manually sends whatever was captured so far
-        if (isListening && recognitionRef.current) {
+        // Helper to cleanly terminate and detach the active speech recognition instance
+        const cleanupRecognition = () => {
             if (voiceWaitTimerRef.current) {
                 clearTimeout(voiceWaitTimerRef.current);
                 voiceWaitTimerRef.current = null;
             }
-            try {
-                recognitionRef.current.stop();
-            } catch {}
+            if (recognitionRef.current) {
+                try {
+                    recognitionRef.current.onresult = null;
+                    recognitionRef.current.onend = null;
+                    recognitionRef.current.onerror = null;
+                    recognitionRef.current.abort();
+                } catch {}
+                recognitionRef.current = null;
+            }
             setIsListening(false);
+            setVoiceTranscriptNotice("");
+        };
+
+        // If already listening, stopping manually sends whatever was captured so far
+        if (isListening && recognitionRef.current) {
             const captured = voiceAccumulatedRef.current.trim();
             voiceAccumulatedRef.current = "";
-            setVoiceTranscriptNotice("");
+            cleanupRecognition();
             setChatInput("");
-            if (captured.length >= 2) {
+
+            if (captured.length >= 2 && !voiceDispatchedForSessionRef.current) {
+                voiceDispatchedForSessionRef.current = true;
                 sendChatMessage(captured, `🎤 "${captured}"`, true);
             }
             return;
         }
 
-        if (voiceWaitTimerRef.current) {
-            clearTimeout(voiceWaitTimerRef.current);
-            voiceWaitTimerRef.current = null;
-        }
+        // Starting a new voice session
+        cleanupRecognition();
         voiceAccumulatedRef.current = "";
+        voiceDispatchedForSessionRef.current = false;
 
         const recognition = new SpeechRecognition();
         recognition.lang = "en-IN";
@@ -1029,6 +1059,9 @@ export default function TableKiosk() {
         };
 
         recognition.onresult = (event: any) => {
+            // If already dispatched, ignore any subsequent speech events from the engine
+            if (voiceDispatchedForSessionRef.current) return;
+
             let fullTranscript = "";
             let lowestConfidence = 1.0;
 
@@ -1042,7 +1075,6 @@ export default function TableKiosk() {
 
             const cleaned = fullTranscript.trim();
             voiceAccumulatedRef.current = cleaned;
-            setChatInput(cleaned);
             setVoiceTranscriptNotice(`🎤 Listening: "${cleaned}"… (waiting 3s for more speech)`);
 
             // Reset the 3-second silence timer every time the user speaks a word
@@ -1051,21 +1083,21 @@ export default function TableKiosk() {
             }
 
             voiceWaitTimerRef.current = setTimeout(() => {
-                try {
-                    recognition.stop();
-                } catch {}
-                setIsListening(false);
+                if (voiceDispatchedForSessionRef.current) return;
 
                 const finalSpoken = voiceAccumulatedRef.current.trim();
                 voiceAccumulatedRef.current = "";
+                cleanupRecognition();
+
                 if (!finalSpoken) return;
 
                 if (finalSpoken.length < 3 || lowestConfidence < 0.65) {
+                    setChatInput(finalSpoken);
                     setVoiceTranscriptNotice(
                         `🎤 Heard: "${finalSpoken}" — Please check & tap Send (or edit if unclear)`
                     );
                 } else {
-                    setVoiceTranscriptNotice("");
+                    voiceDispatchedForSessionRef.current = true;
                     setChatInput("");
                     sendChatMessage(finalSpoken, `🎤 "${finalSpoken}"`, true);
                 }
@@ -1073,7 +1105,11 @@ export default function TableKiosk() {
         };
 
         recognitionRef.current = recognition;
-        recognition.start();
+        try {
+            recognition.start();
+        } catch {
+            setIsListening(false);
+        }
     }
 
     // ─── LEFT SIDE: INSTANT OPTIMISTIC CART UPDATES (No AI delay, No Voice) ───
