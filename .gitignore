@@ -19,3 +19,12 @@ build/
 # Logs
 backend/.system_generated/
 *.log
+
+# Internal spec & planning docs
+spec.md
+story.md
+TECHNICAL_LOW_LEVEL_SPEC.md
+
+# Temporary / Scratch test scripts
+backend/test_*.py
+backend/check_*.py
