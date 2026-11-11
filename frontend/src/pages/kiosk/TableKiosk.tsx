@@ -264,6 +264,34 @@ export default function TableKiosk() {
     const voiceAccumulatedRef = useRef<string>("");
     // Single-dispatch latch per speech session: ensures a voice turn can dispatch AT MOST ONCE
     const voiceDispatchedForSessionRef = useRef<boolean>(false);
+    // Cached AudioContext to unlock mobile/Android audio on user gesture
+    const audioContextRef = useRef<AudioContext | null>(null);
+
+    // Warm up and unlock mobile/tablet audio channel on direct user touch/click
+    function unlockMobileAudio() {
+        try {
+            if (typeof window !== "undefined") {
+                const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+                if (AudioCtx) {
+                    if (!audioContextRef.current) {
+                        audioContextRef.current = new AudioCtx();
+                    }
+                    if (audioContextRef.current.state === "suspended") {
+                        audioContextRef.current.resume();
+                    }
+                }
+                // Prime SpeechSynthesis with a silent empty utterance to unlock Android TTS engine
+                if ("speechSynthesis" in window) {
+                    const silentUtterance = new SpeechSynthesisUtterance(" ");
+                    silentUtterance.volume = 0.01;
+                    silentUtterance.rate = 2;
+                    window.speechSynthesis.speak(silentUtterance);
+                }
+            }
+        } catch {
+            // ignore audio unlock issues
+        }
+    }
     // Guard against simultaneous or rapid duplicate chat sends (debounces voice + form submits)
     const chatInFlightRef = useRef<boolean>(false);
     const lastChatSubmissionTimeRef = useRef<number>(0);
@@ -410,6 +438,10 @@ export default function TableKiosk() {
             // Warm, natural conversational Indian cadence
             utterance.rate = 0.98;
             utterance.pitch = 1.0;
+            // Android mobile voice engine bugfix: resume if paused before speaking
+            if (window.speechSynthesis.paused) {
+                window.speechSynthesis.resume();
+            }
             window.speechSynthesis.speak(utterance);
         } catch {
             // ignore speech errors
@@ -989,8 +1021,11 @@ export default function TableKiosk() {
         }
     }
 
-    // Voice Recognition (Web Speech API) — Waits 3 seconds after customer finishes speaking before answering
+    // Voice Recognition (Web Speech API) — Optimised for Android Tablets & Desktop
     function toggleVoiceInput() {
+        // 1. Instantly unlock Android/Mobile AudioContext & SpeechSynthesis on direct tap
+        unlockMobileAudio();
+
         const SpeechRecognition =
             (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
         if (!SpeechRecognition) {
@@ -1017,7 +1052,7 @@ export default function TableKiosk() {
             setVoiceTranscriptNotice("");
         };
 
-        // If already listening, stopping manually sends whatever was captured so far
+        // If already listening, customer tapped "Done / Send" — immediately dispatch what was spoken!
         if (isListening && recognitionRef.current) {
             const captured = voiceAccumulatedRef.current.trim();
             voiceAccumulatedRef.current = "";
@@ -1038,23 +1073,43 @@ export default function TableKiosk() {
 
         const recognition = new SpeechRecognition();
         recognition.lang = "en-IN";
-        recognition.continuous = true;
+        // On Android / mobile, continuous=true causes multiple competing isFinal events.
+        // We set continuous = false for mobile/touch devices for rock-solid stability.
+        const isMobileDevice =
+            typeof navigator !== "undefined" &&
+            (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1);
+        recognition.continuous = !isMobileDevice;
         recognition.interimResults = true;
         recognition.maxAlternatives = 1;
 
         recognition.onstart = () => {
             setIsListening(true);
-            setVoiceTranscriptNotice("🎤 Listening… Speak your question (waits 3s after you finish speaking)");
+            setVoiceTranscriptNotice("🎤 Listening… Speak now! (Tap ⏹️ or wait 2.5s when done)");
         };
 
         recognition.onend = () => {
             setIsListening(false);
+            // On mobile devices where continuous=false, engine naturally stops when user pauses.
+            // If text was captured and hasn't been sent yet, dispatch it now!
+            const captured = voiceAccumulatedRef.current.trim();
+            if (captured && !voiceDispatchedForSessionRef.current) {
+                voiceAccumulatedRef.current = "";
+                cleanupRecognition();
+                setChatInput("");
+                voiceDispatchedForSessionRef.current = true;
+                sendChatMessage(captured, `🎤 "${captured}"`, true);
+            }
         };
 
-        recognition.onerror = () => {
+        recognition.onerror = (e: any) => {
             setIsListening(false);
             if (!voiceAccumulatedRef.current.trim()) {
-                setVoiceTranscriptNotice("⚠️ Could not hear clearly. Please tap 🎤 again or type below.");
+                const errType = e?.error;
+                if (errType === "not-allowed" || errType === "service-not-allowed") {
+                    setVoiceTranscriptNotice("⚠️ Microphone access blocked. Please allow mic permission in browser settings.");
+                } else if (errType !== "no-speech" && errType !== "aborted") {
+                    setVoiceTranscriptNotice("⚠️ Could not hear clearly. Please tap 🎤 again or type below.");
+                }
             }
         };
 
@@ -1074,10 +1129,12 @@ export default function TableKiosk() {
             }
 
             const cleaned = fullTranscript.trim();
-            voiceAccumulatedRef.current = cleaned;
-            setVoiceTranscriptNotice(`🎤 Listening: "${cleaned}"… (waiting 3s for more speech)`);
+            if (cleaned) {
+                voiceAccumulatedRef.current = cleaned;
+                setVoiceTranscriptNotice(`🎤 Listening: "${cleaned}"… (Tap ⏹️ or pause to send)`);
+            }
 
-            // Reset the 3-second silence timer every time the user speaks a word
+            // Reset the 2.5-second silence timer every time the user speaks a word
             if (voiceWaitTimerRef.current) {
                 clearTimeout(voiceWaitTimerRef.current);
             }
@@ -1091,7 +1148,7 @@ export default function TableKiosk() {
 
                 if (!finalSpoken) return;
 
-                if (finalSpoken.length < 3 || lowestConfidence < 0.65) {
+                if (finalSpoken.length < 2 || lowestConfidence < 0.5) {
                     setChatInput(finalSpoken);
                     setVoiceTranscriptNotice(
                         `🎤 Heard: "${finalSpoken}" — Please check & tap Send (or edit if unclear)`
@@ -1101,7 +1158,7 @@ export default function TableKiosk() {
                     setChatInput("");
                     sendChatMessage(finalSpoken, `🎤 "${finalSpoken}"`, true);
                 }
-            }, 3000);
+            }, 2500);
         };
 
         recognitionRef.current = recognition;
@@ -2821,13 +2878,17 @@ export default function TableKiosk() {
                         onClick={toggleVoiceInput}
                         className={`btn ${isListening ? "btn-danger pulse" : "btn-outline"}`}
                         style={{
-                            padding: "10px 14px",
-                            borderRadius: "50%",
+                            padding: isListening ? "10px 14px" : "10px 14px",
+                            borderRadius: isListening ? 20 : "50%",
                             borderColor: isListening ? "var(--red)" : "#ff6b35",
+                            fontWeight: isListening ? 800 : "normal",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
                         }}
-                        title="Tap and speak to AI Bot"
+                        title={isListening ? "Tap to Finish & Send" : "Tap and speak to AI Bot"}
                     >
-                        🎤
+                        {isListening ? "⏹️ Done" : "🎤"}
                     </button>
                     <input
                         className="input"
