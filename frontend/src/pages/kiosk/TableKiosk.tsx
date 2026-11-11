@@ -262,6 +262,10 @@ export default function TableKiosk() {
     const recognitionRef = useRef<any>(null);
     const voiceWaitTimerRef = useRef<any>(null);
     const voiceAccumulatedRef = useRef<string>("");
+    // Guard against simultaneous or rapid duplicate chat sends (debounces voice + form submits)
+    const chatInFlightRef = useRef<boolean>(false);
+    const lastChatSubmissionTimeRef = useRef<number>(0);
+    const lastChatSubmissionTextRef = useRef<string>("");
 
     // Modals & Entertainment State
     const [showCartoonModal, setShowCartoonModal] = useState<boolean>(false);
@@ -853,10 +857,36 @@ export default function TableKiosk() {
         const messageText = (textToSend ?? chatInput).trim();
         if (!messageText || !sessionData?.session?.id) return;
 
+        // Debounce / duplicate submission lock: ignore if another call is currently in-flight
+        // or if the exact same message was submitted within the last 1500ms
+        const now = Date.now();
+        if (chatInFlightRef.current) return;
+        if (
+            lastChatSubmissionTextRef.current === messageText &&
+            now - lastChatSubmissionTimeRef.current < 1500
+        ) {
+            return;
+        }
+
+        // Lock in-flight chat calls
+        chatInFlightRef.current = true;
+        lastChatSubmissionTimeRef.current = now;
+        lastChatSubmissionTextRef.current = messageText;
+
+        // Clear any lingering voice silence timers to prevent voice onresult timeout from firing a second call
+        if (voiceWaitTimerRef.current) {
+            clearTimeout(voiceWaitTimerRef.current);
+            voiceWaitTimerRef.current = null;
+        }
+
         // Instant Fast Path for Order Confirmation: 0ms delay directly triggers kitchen dispatch
         const norm = messageText.toLowerCase();
         if (norm === "do_confirm" || norm === "confirm_order" || norm === "confirm order" || norm === "confirm") {
-            handleConfirmSendToKitchen();
+            try {
+                await handleConfirmSendToKitchen();
+            } finally {
+                chatInFlightRef.current = false;
+            }
             return;
         }
 
@@ -937,6 +967,7 @@ export default function TableKiosk() {
             );
         } finally {
             setBotThinking(false);
+            chatInFlightRef.current = false;
         }
     }
 
@@ -955,16 +986,16 @@ export default function TableKiosk() {
                 clearTimeout(voiceWaitTimerRef.current);
                 voiceWaitTimerRef.current = null;
             }
-            recognitionRef.current.stop();
+            try {
+                recognitionRef.current.stop();
+            } catch {}
             setIsListening(false);
             const captured = voiceAccumulatedRef.current.trim();
+            voiceAccumulatedRef.current = "";
+            setVoiceTranscriptNotice("");
+            setChatInput("");
             if (captured.length >= 2) {
-                voiceAccumulatedRef.current = "";
-                setVoiceTranscriptNotice("");
-                setChatInput("");
                 sendChatMessage(captured, `🎤 "${captured}"`, true);
-            } else {
-                setVoiceTranscriptNotice("");
             }
             return;
         }
