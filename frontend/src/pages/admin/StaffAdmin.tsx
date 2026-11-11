@@ -83,7 +83,7 @@ export default function StaffAdmin() {
 
             <div className="card table-wrap">
                 <table>
-                    <thead><tr><th>Name</th><th>Branch</th><th>Phone</th><th>Role</th><th>Status</th><th></th></tr></thead>
+                    <thead><tr><th>Name</th><th>Branch</th><th>Login ID / Mobile</th><th>Role</th><th>Status</th><th></th></tr></thead>
                     <tbody>
                         {staff.map((s) => (
                             <tr key={s.id}>
@@ -103,8 +103,8 @@ export default function StaffAdmin() {
                 <div className="modal-overlay" onClick={() => setShowNew(false)}>
                     <div className="card modal" onClick={(e) => e.stopPropagation()}>
                         <h2 style={{ marginBottom: 20 }}>New Staff Member</h2>
-                        <div className="input-group"><label className="input-label">Full Name</label><input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
-                        <div className="input-group"><label className="input-label">Phone</label><input className="input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
+                        <div className="input-group"><label className="input-label">Full Name</label><input className="input" placeholder="e.g. Ravi Kumar" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
+                        <div className="input-group"><label className="input-label">Login ID (10-Digit Mobile or Custom Username)</label><input className="input" placeholder="e.g. 9876543210 or ravi_cashier" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
                         <div className="input-group"><label className="input-label">Password / PIN</label><input className="input" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></div>
                         <div className="input-group">
                             <label className="input-label">Role</label>

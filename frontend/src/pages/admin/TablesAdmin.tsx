@@ -6,7 +6,13 @@ export default function TablesAdmin() {
     const [tables, setTables] = useState<any[]>([]);
     const [branchId, setBranchId] = useState<string>("");
     const [newNum, setNewNum] = useState("");
-    const [qrResult, setQrResult] = useState<{ table_number: number; wa_link: string } | null>(null);
+    const [qrResult, setQrResult] = useState<{
+        table_number: number;
+        wa_link: string;
+        kiosk_path?: string;
+        token?: string;
+    } | null>(null);
+
 
     const [showAdd, setShowAdd] = useState(false);
 
@@ -72,19 +78,35 @@ export default function TablesAdmin() {
 
             <div className="card table-wrap">
                 <table>
-                    <thead><tr><th>Table #</th><th>ID</th><th>Active</th><th>QR</th></tr></thead>
+                    <thead><tr><th>Table #</th><th>ID</th><th>Active</th><th>Smart Tablet Kiosk & QR</th></tr></thead>
                     <tbody>
                         {tables.map((t) => (
                             <tr key={t.id}>
                                 <td style={{ fontWeight: 700, fontSize: "1.1rem" }}>T{t.table_number}</td>
                                 <td className="text-muted text-sm">{t.id.slice(0, 8)}…</td>
                                 <td><span style={{ color: t.is_active ? "var(--green)" : "var(--red)" }}>{t.is_active ? "Active" : "Inactive"}</span></td>
-                                <td><button className="btn btn-outline btn-sm" onClick={() => generateQR(t.id)}>🔗 Generate QR</button></td>
+                                <td>
+                                    <div className="flex gap-2">
+                                        <a
+                                            className="btn btn-primary btn-sm"
+                                            href={`/kiosk?table_id=${t.id}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            style={{ textDecoration: "none" }}
+                                        >
+                                            📱 Launch Tablet UI
+                                        </a>
+                                        <button className="btn btn-outline btn-sm" onClick={() => generateQR(t.id)}>
+                                            🔗 Generate Table QR
+                                        </button>
+                                    </div>
+                                </td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
             </div>
+
 
             {showAdd && (
                 <div className="modal-overlay" onClick={() => setShowAdd(false)}>
@@ -115,38 +137,55 @@ export default function TablesAdmin() {
             {qrResult && (
                 <div className="modal-overlay" onClick={() => setQrResult(null)}>
                     <div className="card modal" onClick={(e) => e.stopPropagation()}>
-                        <h2 style={{ marginBottom: 16 }}>✅ QR Generated — Table {qrResult.table_number}</h2>
-                        <p className="text-muted text-sm" style={{ marginBottom: 12 }}>Share this WhatsApp link with the customer or print it as a QR code:</p>
+                        <h2 style={{ marginBottom: 12 }}>✅ Table {qrResult.table_number} — Smart Tablet & QR Link</h2>
+                        <p className="text-muted text-sm" style={{ marginBottom: 16 }}>
+                            Scan this QR code or open the link on the Table Tablet device to launch the AI Voice & Touch Ordering Kiosk:
+                        </p>
 
                         <div style={{ display: "flex", justifyContent: "center", marginBottom: 16, background: "white", padding: 16, borderRadius: 8 }}>
                             <QRCodeCanvas
                                 id="qr-canvas"
-                                value={qrResult.wa_link}
+                                value={`${window.location.origin}${qrResult.kiosk_path || `/table/${qrResult.token}`}`}
                                 size={200}
                                 level="H"
                                 includeMargin={true}
                             />
                         </div>
 
-                        <div className="flex gap-2" style={{ marginBottom: 16, justifyContent: "center" }}>
+                        <div className="flex gap-2" style={{ marginBottom: 16, justifyContent: "center", flexWrap: "wrap" }}>
                             <button className="btn btn-outline" onClick={() => {
                                 const canvas = document.getElementById("qr-canvas") as HTMLCanvasElement;
                                 if (canvas) {
                                     const a = document.createElement("a");
                                     a.href = canvas.toDataURL("image/png");
-                                    a.download = `Table-${qrResult.table_number}-QR.png`;
+                                    a.download = `Table-${qrResult.table_number}-Kiosk-QR.png`;
                                     a.click();
                                 }
                             }}>
-                                ⬇️ Download Image
+                                ⬇️ Download QR
                             </button>
-                            <a className="btn btn-primary" href={qrResult.wa_link} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", textDecoration: "none" }}>
-                                Open in WhatsApp
+                            <a
+                                className="btn btn-primary"
+                                href={`${window.location.origin}${qrResult.kiosk_path || `/table/${qrResult.token}`}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ display: "inline-flex", textDecoration: "none" }}
+                            >
+                                📱 Open Tablet Kiosk UI
+                            </a>
+                            <a
+                                className="btn btn-outline"
+                                href={qrResult.wa_link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ display: "inline-flex", textDecoration: "none" }}
+                            >
+                                💬 WhatsApp Fallback
                             </a>
                         </div>
 
                         <div style={{ background: "var(--bg-base)", padding: 12, borderRadius: 8, wordBreak: "break-all", fontSize: "0.8rem", color: "var(--green)", marginBottom: 16 }}>
-                            {qrResult.wa_link}
+                            {`${window.location.origin}${qrResult.kiosk_path || `/table/${qrResult.token}`}`}
                         </div>
 
                         <div style={{ textAlign: "center" }}>
@@ -155,6 +194,7 @@ export default function TablesAdmin() {
                     </div>
                 </div>
             )}
+
         </div>
     );
 }

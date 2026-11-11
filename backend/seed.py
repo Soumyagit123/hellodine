@@ -45,6 +45,7 @@ async def seed():
 
         # ── Staff ──────────────────────────────────────────────────────
         staff_data = [
+            ("SaaS System Owner", "+91 9000000000", "sysadmin123", StaffRole.SYSTEM_ADMIN, None),
             ("Super Admin", "+91 9000000001", "admin123", StaffRole.SUPER_ADMIN, None),
             ("Kitchen Chef", "+91 9000000002", "kitchen123", StaffRole.KITCHEN, None),
             ("Cashier Ravi", "+91 9000000003", "cashier123", StaffRole.CASHIER, None),
@@ -52,7 +53,7 @@ async def seed():
         for name, phone, pwd, role, bid in staff_data:
             db.add(StaffUser(
                 restaurant_id=restaurant.id,
-                branch_id=branch.id if bid is None and role != StaffRole.SUPER_ADMIN else bid,
+                branch_id=branch.id if bid is None and role not in (StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN) else bid,
                 role=role, name=name, phone=phone, password_hash=hash_password(pwd),
             ))
 

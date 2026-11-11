@@ -60,13 +60,16 @@ body {
 
 .sidebar {
   width: 240px;
-  min-height: 100vh;
+  height: 100vh;
+  max-height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--bg-card);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 24px 16px;
-  gap: 8px;
+  padding: 20px 16px;
+  gap: 6px;
   position: fixed;
   left: 0;
   top: 0;

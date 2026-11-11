@@ -14,12 +14,10 @@ export default function Login() {
         setLoading(true);
         setError("");
         try {
-            const form = new FormData();
-            form.append("username", phone);
-            form.append("password", password);
-            const res = await api.post("/auth/login", form, {
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            });
+            const params = new URLSearchParams();
+            params.append("username", phone.trim());
+            params.append("password", password);
+            const res = await api.post("/auth/login", params);
             localStorage.setItem("hd_token", res.data.access_token);
             localStorage.setItem("hd_staff", JSON.stringify(res.data));
 
@@ -44,12 +42,12 @@ export default function Login() {
 
                 <form onSubmit={handleSubmit}>
                     <div className="input-group">
-                        <label className="input-label">Phone Number</label>
+                        <label className="input-label">Login ID / Mobile Number / Username</label>
                         <input
                             id="phone"
                             className="input"
-                            type="tel"
-                            placeholder="+91 9876543210"
+                            type="text"
+                            placeholder="e.g. 9000000001 or ravi_cashier or sysadmin"
                             value={phone}
                             onChange={(e) => setPhone(e.target.value)}
                             required
@@ -78,8 +76,19 @@ export default function Login() {
                 </form>
 
                 <p className="text-muted text-sm" style={{ marginTop: "20px", textAlign: "center" }}>
-                    Powered by HelloDine v1.0
+                    Powered by HelloDine v2.0
                 </p>
+
+                <div style={{ marginTop: "18px", paddingTop: "16px", borderTop: "1px solid var(--border)", textAlign: "center" }}>
+                    <a
+                        href="/kiosk"
+                        className="btn btn-outline"
+                        style={{ width: "100%", justifyContent: "center", textDecoration: "none", color: "var(--green)", borderColor: "var(--green)" }}
+                    >
+                        📱 Open Customer Table Kiosk UI →
+                    </a>
+                </div>
+
             </div>
         </div>
     );

@@ -8,6 +8,7 @@ from app.models.menu import MenuItem
 from app.models.customers import TableSession
 from app.models.tenancy import Table, Branch
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 import time
 
 
@@ -60,20 +61,51 @@ async def bill_generator(state: BotState) -> BotState:
             await db.commit()
             await db.refresh(bill)
 
-        # Build bill summary lines from orders
+        else:
+            # Always recalculate unpaid bill so newly placed orders are included
+            orders_result = await db.execute(
+                select(Order).where(
+                    Order.session_id == uuid.UUID(session_id),
+                    Order.status.notin_([OrderStatus.CANCELLED]),
+                )
+            )
+            orders = orders_result.scalars().all()
+            if orders:
+                bill.subtotal = sum(float(o.subtotal) for o in orders)
+                bill.cgst_amount = sum(float(o.cgst_amount) for o in orders)
+                bill.sgst_amount = sum(float(o.sgst_amount) for o in orders)
+                bill.total = sum(float(o.total) for o in orders)
+                await db.commit()
+                await db.refresh(bill)
+
+        # Build bill summary lines from orders in 1 query with selectinload
         orders_result = await db.execute(
-            select(Order).where(Order.session_id == uuid.UUID(session_id))
+            select(Order)
+            .where(Order.session_id == uuid.UUID(session_id), Order.status.notin_([OrderStatus.CANCELLED]))
+            .options(selectinload(Order.items).selectinload(OrderItem.menu_item))
         )
         orders = orders_result.scalars().all()
         lines = []
         for order in orders:
-            items_r = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
-            for oi in items_r.scalars().all():
-                item_r = await db.execute(select(MenuItem).where(MenuItem.id == oi.menu_item_id))
-                mi = item_r.scalar_one()
-                lines.append(f"• {mi.name} ×{oi.quantity} — ₹{oi.line_total:.0f}")
+            for oi in order.items:
+                mi_name = oi.menu_item.name if oi.menu_item else "Item"
+                lines.append(f"• {mi_name} ×{oi.quantity} — ₹{oi.line_total:.0f}")
 
         items_text = "\n".join(lines) if lines else "No items"
+
+        state["ui_action"] = {
+            "action": "SHOW_BILL",
+            "bill": {
+                "id": str(bill.id),
+                "bill_number": bill.bill_number,
+                "subtotal": float(bill.subtotal),
+                "cgst_amount": float(bill.cgst_amount),
+                "sgst_amount": float(bill.sgst_amount),
+                "total": float(bill.total),
+                "status": str(bill.status.value if hasattr(bill.status, "value") else bill.status),
+                "items_text": items_text,
+            }
+        }
 
         state["final_response"] = {
             "type": "text",
@@ -86,10 +118,13 @@ async def bill_generator(state: BotState) -> BotState:
                 f"SGST      : ₹{bill.sgst_amount:.2f}\n"
                 f"{'─'*28}\n"
                 f"*Total    : ₹{bill.total:.2f}*\n\n"
-                "Please pay at the cashier counter 💳 or ask staff for UPI QR."
+                "Scan the UPI QR code on your screen to pay instantly at the table, or pay at the cashier counter! 💳"
             ),
+            "voice_text": f"Please review your GST invoice of Rupees {bill.total:.0f} on the screen and scan the QR code to complete your payment.",
         }
+
     return state
+
 
 
 async def receipt_sender(state: BotState) -> BotState:

@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, cast, Date
+from sqlalchemy import select, func, cast, Date, or_, and_
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 from typing import Optional
@@ -12,11 +12,18 @@ import time
 from app.database import get_db
 from app.models.billing import Bill, Payment, BillStatus, PaymentMethod
 from app.models.orders import Order, OrderStatus
-from app.models.customers import TableSession, SessionStatus
+from app.models.customers import Customer, TableSession, SessionStatus
 from app.models.auth import StaffUser, StaffRole
+from app.models.tenancy import Table
 from app.services.auth_service import get_current_staff
+from app.services.ws_manager import manager
+from app.services.cache_service import cache
+
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
+
+
+from app.services.billing_service import sync_session_bill
 
 
 class PayRequest(BaseModel):
@@ -30,47 +37,9 @@ class PayRequest(BaseModel):
 @router.post("/generate")
 async def generate_bill(session_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Aggregate all non-cancelled orders for a session into a consolidated bill."""
-    # Check existing unpaid bill
-    existing = await db.execute(
-        select(Bill).where(Bill.session_id == session_id, Bill.status == BillStatus.UNPAID)
-    )
-    existing_bill = existing.scalar_one_or_none()
-    if existing_bill:
-        return existing_bill
-
-    orders_result = await db.execute(
-        select(Order).where(
-            Order.session_id == session_id,
-            Order.status.notin_([OrderStatus.CANCELLED]),
-        )
-    )
-    orders = orders_result.scalars().all()
-    if not orders:
-        raise HTTPException(400, "No open orders to bill")
-
-    sess_result = await db.execute(select(TableSession).where(TableSession.id == session_id))
-    session = sess_result.scalar_one()
-
-    subtotal = sum(o.subtotal for o in orders)
-    cgst = sum(o.cgst_amount for o in orders)
-    sgst = sum(o.sgst_amount for o in orders)
-    total = sum(o.total for o in orders)
-    bill_number = f"BILL-{int(time.time() * 1000) % 10_000_000}"
-
-    bill = Bill(
-        branch_id=session.branch_id,
-        table_id=session.table_id,
-        session_id=session_id,
-        bill_number=bill_number,
-        subtotal=subtotal,
-        cgst_amount=cgst,
-        sgst_amount=sgst,
-        total=total,
-        status=BillStatus.UNPAID,
-    )
-    db.add(bill)
-    await db.commit()
-    await db.refresh(bill)
+    bill = await sync_session_bill(session_id, db)
+    if not bill:
+        raise HTTPException(400, "No open orders to bill for this table session")
     return bill
 
 
@@ -83,6 +52,7 @@ async def pay_bill(bill_id: uuid.UUID, data: PayRequest, db: AsyncSession = Depe
     if bill.status == BillStatus.PAID:
         raise HTTPException(400, "Bill already paid")
 
+    now = datetime.now(timezone.utc)
     payment = Payment(
         bill_id=bill_id,
         method=data.method,
@@ -93,16 +63,62 @@ async def pay_bill(bill_id: uuid.UUID, data: PayRequest, db: AsyncSession = Depe
     )
     db.add(payment)
     bill.status = BillStatus.PAID
-    bill.closed_at = datetime.now(timezone.utc)
+    bill.closed_at = now
 
     # Close session
     sess_result = await db.execute(select(TableSession).where(TableSession.id == bill.session_id))
-    sess = sess_result.scalar_one()
-    sess.status = SessionStatus.CLOSED
-    sess.closed_at = datetime.now(timezone.utc)
+    sess = sess_result.scalar_one_or_none()
+    if sess:
+        sess.status = SessionStatus.CLOSED
+        sess.closed_at = now
+
+    # Also mark any other/duplicate unpaid bills for this session as PAID/CLOSED
+    other_bills_res = await db.execute(
+        select(Bill).where(Bill.session_id == bill.session_id, Bill.id != bill.id, Bill.status == BillStatus.UNPAID)
+    )
+    for ob in other_bills_res.scalars().all():
+        ob.status = BillStatus.PAID
+        ob.closed_at = now
+
+    table_res = await db.execute(select(Table).where(Table.id == bill.table_id))
+    tbl = table_res.scalar_one_or_none()
+    table_num = tbl.table_number if tbl else None
 
     await db.commit()
+
+    cache.invalidate_prefix(f"billing_tx:{bill.branch_id}")
+    cache.invalidate_prefix(f"corp_dashboard:{bill.branch_id}")
+    cache.invalidate_prefix(f"daily_report:{bill.branch_id}")
+
+    # Notify branch (Cashier / Kitchen)
+    try:
+        await manager.broadcast_to_branch(str(bill.branch_id), {
+            "event": "BILL_PAID",
+            "bill_id": str(bill.id),
+            "bill_number": bill.bill_number,
+            "table_id": str(bill.table_id),
+            "table_number": table_num,
+            "amount": float(data.amount),
+            "method": str(data.method.value if hasattr(data.method, "value") else data.method),
+        })
+    except Exception:
+        pass
+
+    # Notify Customer Table Tablet UI so it shows Goodbye message & expires session
+    try:
+        await manager.broadcast_to_table(str(bill.session_id), {
+            "event": "SESSION_PAID_AND_EXPIRED",
+            "bill_id": str(bill.id),
+            "bill_number": bill.bill_number,
+            "amount": float(data.amount),
+            "method": str(data.method.value if hasattr(data.method, "value") else data.method),
+            "message": "Thank you for dining with us! Your payment is complete and your table session has now closed. Have a wonderful day! 🙏✨",
+        })
+    except Exception:
+        pass
+
     return {"ok": True, "bill_number": bill.bill_number, "amount_paid": data.amount}
+
 
 
 @router.get("/table/{table_id}/open")
@@ -122,7 +138,12 @@ async def daily_report(branch_id: uuid.UUID, date: str, db: AsyncSession = Depen
     if current_staff.role == StaffRole.BRANCH_ADMIN:
         if str(branch_id) != str(current_staff.branch_id):
             raise HTTPException(403, "Access denied to this branch's reports")
-            
+
+    cache_key = f"daily_report:{branch_id}:{date}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     # Parse the incoming "YYYY-MM-DD" string
     target_date = datetime.strptime(date, "%Y-%m-%d").date()
     
@@ -143,18 +164,25 @@ async def daily_report(branch_id: uuid.UUID, date: str, db: AsyncSession = Depen
         )
     )
     row = result.one()
-    return {
+    out = {
         "date": date,
         "total_bills": row.total_bills or 0,
         "total_revenue": float(row.total_revenue or 0),
         "total_cgst": float(row.total_cgst or 0),
         "total_sgst": float(row.total_sgst or 0),
     }
+    cache.set(cache_key, out, ttl_seconds=30)
+    return out
 
 
 @router.get("/report/dashboard")
 async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Comprehensive Corporate Analytics Dashboard API."""
+    cache_key = f"corp_dashboard:{branch_id}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     from datetime import date as dt_date, datetime, timezone, timedelta
     
     today = dt_date.today()
@@ -210,13 +238,15 @@ async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(g
             "orders": day_row.cnt or 0
         })
 
-    return {
+    dashboard_out = {
         "ok": True,
         "today": today_stats,
         "month": mtd_stats,
         "all_time": all_time_stats,
         "trend_7d": trend_data
     }
+    cache.set(cache_key, dashboard_out, ttl_seconds=60)
+    return dashboard_out
 
 
 @router.get("/history")
@@ -242,50 +272,76 @@ async def transactions_by_date(
     db: AsyncSession = Depends(get_db)
 ):
     """Return ALL bills (paid + unpaid) for a specific date for this branch."""
+    cache_key = f"billing_tx:{branch_id}:{date or 'today'}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     from app.models.tenancy import Table as TableModel
-    from datetime import date as dt_date, datetime
+    from datetime import date as dt_date, datetime, timezone, timedelta
+    from app.models.customers import Customer
 
+    # Timezone-aware date window (IST UTC+05:30)
+    tz_ist = timezone(timedelta(hours=5, minutes=30))
     if date:
-        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except Exception:
+            target_date = datetime.now(tz_ist).date()
     else:
-        target_date = dt_date.today()
+        target_date = datetime.now(tz_ist).date()
 
-    # Create a timezone-aware range for the whole target day
-    start_of_day = datetime.combine(target_date, datetime.min.time()).astimezone(timezone.utc)
-    end_of_day = datetime.combine(target_date, datetime.max.time()).astimezone(timezone.utc)
+    local_start = datetime.combine(target_date, datetime.min.time(), tzinfo=tz_ist)
+    local_end = datetime.combine(target_date, datetime.max.time(), tzinfo=tz_ist)
+    start_of_day = local_start.astimezone(timezone.utc)
+    end_of_day = local_end.astimezone(timezone.utc)
 
     result = await db.execute(
-        select(Bill)
+        select(Bill, TableModel, Customer, TableSession)
+        .outerjoin(TableModel, Bill.table_id == TableModel.id)
+        .outerjoin(TableSession, Bill.session_id == TableSession.id)
+        .outerjoin(Customer, TableSession.customer_id == Customer.id)
         .where(
             Bill.branch_id == branch_id,
-            Bill.created_at >= start_of_day,
-            Bill.created_at <= end_of_day,
+            or_(
+                # Paid bills matching this date (either closed_at or created_at)
+                and_(
+                    Bill.status == BillStatus.PAID,
+                    or_(
+                        and_(Bill.closed_at >= start_of_day, Bill.closed_at <= end_of_day),
+                        and_(Bill.created_at >= start_of_day, Bill.created_at <= end_of_day),
+                    ),
+                ),
+                # Pending unpaid bills: ONLY if status is UNPAID AND table session is currently ACTIVE
+                and_(
+                    Bill.status == BillStatus.UNPAID,
+                    TableSession.status == SessionStatus.ACTIVE,
+                ),
+            ),
         )
         .order_by(Bill.created_at.desc())
     )
-    bills = result.scalars().all()
+    rows = result.all()
 
-    # Enrich with table number
     output = []
-    for bill in bills:
-        table_number = None
-        if bill.table_id:
-            t_res = await db.execute(select(TableModel).where(TableModel.id == bill.table_id))
-            t = t_res.scalar_one_or_none()
-            table_number = t.table_number if t else None
+    for bill, tbl, cust, sess in rows:
+        table_number = tbl.table_number if tbl else None
+        customer_name = (cust.name if cust and cust.name else None) or f"Table {table_number or ''} Guest".strip()
 
         output.append({
             "id": str(bill.id),
             "bill_number": bill.bill_number,
             "table_id": str(bill.table_id),
             "table_number": table_number,
+            "customer_name": customer_name,
             "subtotal": float(bill.subtotal),
             "cgst_amount": float(bill.cgst_amount),
             "sgst_amount": float(bill.sgst_amount),
             "total": float(bill.total),
-            "status": bill.status,
+            "status": str(bill.status.value if hasattr(bill.status, "value") else bill.status),
             "created_at": bill.created_at.isoformat() if bill.created_at else None,
             "closed_at": bill.closed_at.isoformat() if bill.closed_at else None,
         })
 
+    cache.set(cache_key, output, ttl_seconds=15)
     return output

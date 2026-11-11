@@ -9,7 +9,7 @@ export default function MenuAdmin() {
     const [showNewCat, setShowNewCat] = useState(false);
     const [showNewItem, setShowNewItem] = useState(false);
     const [catName, setCatName] = useState("");
-    const [itemForm, setItemForm] = useState({ name: "", base_price: "", gst_percent: "5", is_veg: true, description: "" });
+    const [itemForm, setItemForm] = useState({ name: "", base_price: "", gst_percent: "5", is_veg: true, is_bestseller: false, description: "" });
 
     useEffect(() => {
         const staff = JSON.parse(localStorage.getItem("hd_staff") || "{}");
@@ -54,7 +54,13 @@ export default function MenuAdmin() {
     async function createItem() {
         await api.post("/menu/items", { ...itemForm, branch_id: branchId, category_id: selectedCat, base_price: parseFloat(itemForm.base_price), gst_percent: parseInt(itemForm.gst_percent) });
         setShowNewItem(false);
-        setItemForm({ name: "", base_price: "", gst_percent: "5", is_veg: true, description: "" });
+        setItemForm({ name: "", base_price: "", gst_percent: "5", is_veg: true, is_bestseller: false, description: "" });
+        const r = await api.get(`/menu/items?branch_id=${branchId}&category_id=${selectedCat}`);
+        setItems(r.data);
+    }
+
+    async function toggleBestseller(item: any) {
+        await api.patch(`/menu/items/${item.id}`, { is_bestseller: !item.is_bestseller });
         const r = await api.get(`/menu/items?branch_id=${branchId}&category_id=${selectedCat}`);
         setItems(r.data);
     }
@@ -93,14 +99,30 @@ export default function MenuAdmin() {
                             </div>
                             <div className="card table-wrap">
                                 <table>
-                                    <thead><tr><th>Name</th><th>Type</th><th>Price</th><th>GST</th><th>Available</th><th></th></tr></thead>
+                                    <thead><tr><th>Name</th><th>Type</th><th>Price</th><th>GST</th><th>⭐ Bestseller</th><th>Available</th><th></th></tr></thead>
                                     <tbody>
                                         {items.map((item) => (
                                             <tr key={item.id}>
-                                                <td><span style={{ fontWeight: 600 }}>{item.name}</span></td>
+                                                <td>
+                                                    <span style={{ fontWeight: 600 }}>{item.name}</span>
+                                                    {item.is_bestseller && (
+                                                        <span className="badge" style={{ marginLeft: 8, background: "rgba(249,202,36,0.2)", color: "#f9ca24" }}>
+                                                            ⭐ Top Pick
+                                                        </span>
+                                                    )}
+                                                </td>
                                                 <td>{item.is_veg ? <span className="badge badge-veg">🟢 Veg</span> : <span className="badge badge-nonveg">🔴 Non-Veg</span>}</td>
                                                 <td>₹{item.base_price}</td>
                                                 <td>{item.gst_percent}%</td>
+                                                <td>
+                                                    <button
+                                                        className={`btn btn-sm ${item.is_bestseller ? "btn-primary" : "btn-outline"}`}
+                                                        style={{ fontSize: "0.75rem", padding: "4px 10px" }}
+                                                        onClick={() => toggleBestseller(item)}
+                                                    >
+                                                        {item.is_bestseller ? "⭐ Bestseller" : "☆ Mark Best"}
+                                                    </button>
+                                                </td>
                                                 <td>
                                                     <span style={{ color: item.is_available ? "var(--green)" : "var(--red)", fontWeight: 600 }}>
                                                         {item.is_available ? "Yes" : "No"}
@@ -151,6 +173,16 @@ export default function MenuAdmin() {
                             <select className="select" style={{ width: "100%" }} value={itemForm.is_veg ? "veg" : "nonveg"} onChange={(e) => setItemForm({ ...itemForm, is_veg: e.target.value === "veg" })}>
                                 <option value="veg">🟢 Veg</option><option value="nonveg">🔴 Non-Veg</option>
                             </select>
+                        </div>
+                        <div className="input-group">
+                            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "0.9rem" }}>
+                                <input
+                                    type="checkbox"
+                                    checked={itemForm.is_bestseller}
+                                    onChange={(e) => setItemForm({ ...itemForm, is_bestseller: e.target.checked })}
+                                />
+                                ⭐ Mark as Chef's Bestseller (Recommended by AI to confused customers)
+                            </label>
                         </div>
                         <div className="flex gap-2">
                             <button className="btn btn-outline" onClick={() => setShowNewItem(false)}>Cancel</button>

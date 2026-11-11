@@ -29,5 +29,12 @@ class Settings(BaseSettings):
     # Gemini
     GEMINI_API_KEY: str = ""
 
+    # Merchant UPI ID for Table QR Payments (Fallback if restaurant hasn't set its own)
+    MERCHANT_UPI_ID: str = "hellodine@ybl"
+    # SaaS Platform Owner UPI ID (For restaurants paying subscription fees to you)
+    SAAS_OWNER_UPI_ID: str = "hellodine.saas@ybl"
+    SAAS_OWNER_NAME: str = "HelloDine SaaS Platform"
+
+
 
 settings = Settings()

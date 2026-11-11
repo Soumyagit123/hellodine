@@ -9,6 +9,7 @@ from typing import Optional
 
 from app.database import get_db
 from app.models.menu import MenuCategory, MenuItem, MenuItemVariant, MenuModifierGroup, MenuModifier, SpiceLevel
+from app.services.cache_service import cache
 
 router = APIRouter(prefix="/api/menu", tags=["menu"])
 
@@ -31,6 +32,7 @@ class ItemCreate(BaseModel):
     hsn_code: Optional[str] = None
     is_veg: bool = True
     is_jain: bool = False
+    is_bestseller: bool = False
     spice_level: Optional[SpiceLevel] = None
     allergens: Optional[list[str]] = None
     calories: Optional[int] = None
@@ -63,6 +65,8 @@ async def create_category(data: CategoryCreate, db: AsyncSession = Depends(get_d
     db.add(cat)
     await db.commit()
     await db.refresh(cat)
+    cache.invalidate_prefix(f"static_menu:{cat.branch_id}")
+    cache.invalidate_prefix(f"ai_static_context:{cat.branch_id}")
     return cat
 
 
@@ -84,6 +88,8 @@ async def update_category(cat_id: uuid.UUID, data: dict, db: AsyncSession = Depe
         if hasattr(cat, k):
             setattr(cat, k, v)
     await db.commit()
+    cache.invalidate_prefix(f"static_menu:{cat.branch_id}")
+    cache.invalidate_prefix(f"ai_static_context:{cat.branch_id}")
     return cat
 
 
@@ -94,6 +100,14 @@ async def create_item(data: ItemCreate, db: AsyncSession = Depends(get_db)):
     db.add(item)
     await db.commit()
     await db.refresh(item)
+    try:
+        from app.services.vector_service import embed_and_save_menu_item
+        await embed_and_save_menu_item(item.id, db)
+    except Exception:
+        pass
+    cache.invalidate_prefix(f"static_menu:{item.branch_id}")
+    cache.invalidate_prefix(f"ai_static_context:{item.branch_id}")
+    cache.invalidate_prefix(f"ranked_items:{item.branch_id}")
     return item
 
 
@@ -128,6 +142,14 @@ async def update_item(item_id: uuid.UUID, data: dict, db: AsyncSession = Depends
         if hasattr(item, k):
             setattr(item, k, v)
     await db.commit()
+    try:
+        from app.services.vector_service import embed_and_save_menu_item
+        await embed_and_save_menu_item(item.id, db)
+    except Exception:
+        pass
+    cache.invalidate_prefix(f"static_menu:{item.branch_id}")
+    cache.invalidate_prefix(f"ai_static_context:{item.branch_id}")
+    cache.invalidate_prefix(f"ranked_items:{item.branch_id}")
     return item
 
 
@@ -139,6 +161,9 @@ async def delete_item(item_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Item not found")
     item.is_available = False
     await db.commit()
+    cache.invalidate_prefix(f"static_menu:{item.branch_id}")
+    cache.invalidate_prefix(f"ai_static_context:{item.branch_id}")
+    cache.invalidate_prefix(f"ranked_items:{item.branch_id}")
     return {"ok": True}
 
 

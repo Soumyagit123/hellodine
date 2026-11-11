@@ -9,7 +9,9 @@ import StaffAdmin from "./pages/admin/StaffAdmin";
 import DailyReport from "./pages/admin/DailyReport";
 import BranchAdmin from "./pages/admin/BranchAdmin";
 import SystemAdmin from "./pages/admin/SystemAdmin";
+import TableKiosk from "./pages/kiosk/TableKiosk";
 import client from "./api/client";
+
 
 function isLoggedIn() {
     return !!localStorage.getItem("hd_token");
@@ -22,6 +24,20 @@ function getRole() {
     } catch {
         return "";
     }
+}
+
+function getDefaultHomePath(role: string) {
+    if (role === "SYSTEM_ADMIN") return "/system";
+    return "/orders";
+}
+
+function RequireRole({ allowedRoles, children }: { allowedRoles: string[]; children: React.ReactElement }) {
+    const role = getRole();
+    if (!role) return <Navigate to="/login" replace />;
+    if (!allowedRoles.includes(role)) {
+        return <Navigate to={getDefaultHomePath(role)} replace />;
+    }
+    return children;
 }
 
 function BranchSelector() {
@@ -74,7 +90,7 @@ function BranchSelector() {
     );
 }
 
-function Sidebar({ hideSidebar, openPasswordModal }: { hideSidebar: () => void, openPasswordModal: () => void }) {
+function Sidebar({ isOpen, hideSidebar, openPasswordModal }: { isOpen: boolean; hideSidebar: () => void; openPasswordModal: () => void }) {
     const navigate = useNavigate();
     const role = getRole();
     const staff = JSON.parse(localStorage.getItem("hd_staff") || "{}");
@@ -85,8 +101,8 @@ function Sidebar({ hideSidebar, openPasswordModal }: { hideSidebar: () => void, 
     }
 
     return (
-        <aside className="sidebar">
-            <div className="logo" style={{ flexDirection: "column", alignItems: "flex-start", height: "auto", padding: "16px 14px 10px" }}>
+        <aside className={`sidebar ${isOpen ? "open" : ""}`}>
+            <div className="logo" style={{ flexDirection: "column", alignItems: "flex-start", height: "auto", padding: "8px 14px 12px", marginBottom: "10px", flexShrink: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                     <div className="logo-dot" />
                     <span style={{ fontSize: "1.1rem", fontWeight: 800 }}>{staff.restaurant_name || "HelloDine"}</span>
@@ -98,54 +114,63 @@ function Sidebar({ hideSidebar, openPasswordModal }: { hideSidebar: () => void, 
                 )}
             </div>
 
-            <div style={{ padding: "0 14px", marginBottom: "20px" }}>
+            <div style={{ padding: "0 14px", marginBottom: "12px", flexShrink: 0 }}>
                 <div style={{ fontSize: "0.85rem", fontWeight: 700 }}>{staff.name}</div>
                 <div style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>{staff.role}</div>
             </div>
 
             {role === "SUPER_ADMIN" && <BranchSelector />}
 
-            <NavLink to="/orders" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar}>
-                🍽️ Orders
-            </NavLink>
+            {role !== "SYSTEM_ADMIN" && (
+                <>
+                    <NavLink to="/orders" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>
+                        🍽️ Orders
+                    </NavLink>
+
+                    <a href="/kiosk" target="_blank" rel="noopener noreferrer" className="nav-link" onClick={hideSidebar} style={{ flexShrink: 0 }}>
+                        📱 Table Kiosk UI
+                    </a>
+                </>
+            )}
+
 
             {(role === "CASHIER" || role === "BRANCH_ADMIN" || role === "SUPER_ADMIN") && (
-                <NavLink to="/billing" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar}>
+                <NavLink to="/billing" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>
                     💰 Billing
                 </NavLink>
             )}
 
             {(role === "BRANCH_ADMIN" || role === "SUPER_ADMIN") && (
                 <>
-                    <div style={{ margin: "16px 0 8px", fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", padding: "0 14px" }}>
+                    <div style={{ margin: "12px 0 4px", fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", padding: "0 14px", flexShrink: 0 }}>
                         Admin
                     </div>
-                    <NavLink to="/admin/menu" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar}>📋 Menu</NavLink>
-                    <NavLink to="/admin/tables" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar}>🪑 Tables</NavLink>
-                    <NavLink to="/admin/staff" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar}>👤 Staff</NavLink>
-                    <NavLink to="/admin/report" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar}>📊 Daily Report</NavLink>
+                    <NavLink to="/admin/menu" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>📋 Menu</NavLink>
+                    <NavLink to="/admin/tables" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>🪑 Tables</NavLink>
+                    <NavLink to="/admin/staff" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>👤 Staff</NavLink>
+                    <NavLink to="/admin/report" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>📊 Daily Report</NavLink>
                     {role === "SUPER_ADMIN" && (
-                        <NavLink to="/admin/branches" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar}>🏘️ Branches</NavLink>
+                        <NavLink to="/admin/branches" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>🏘️ Branches</NavLink>
                     )}
                 </>
             )}
 
             {role === "SYSTEM_ADMIN" && (
                 <>
-                    <div style={{ margin: "16px 0 8px", fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--accent)", padding: "0 14px" }}>
+                    <div style={{ margin: "12px 0 4px", fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--accent)", padding: "0 14px", flexShrink: 0 }}>
                         Provider
                     </div>
-                    <NavLink to="/system" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar}>🌐 System Dashboard</NavLink>
+                    <NavLink to="/system" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>🌐 System Dashboard</NavLink>
                 </>
             )}
 
-            <div style={{ flex: 1 }} />
+            <div style={{ flex: 1, minHeight: "12px" }} />
 
-            <button className="nav-link" onClick={() => { hideSidebar(); openPasswordModal(); }} style={{ color: "var(--orange)" }}>
+            <button className="nav-link" onClick={() => { hideSidebar(); openPasswordModal(); }} style={{ color: "var(--orange)", flexShrink: 0 }}>
                 🔐 Change Password
             </button>
 
-            <button className="nav-link" onClick={logout} style={{ color: "var(--red)" }}>
+            <button className="nav-link" onClick={logout} style={{ color: "var(--red)", flexShrink: 0 }}>
                 🚪 Logout
             </button>
         </aside>
@@ -215,9 +240,7 @@ function ProtectedLayout() {
     return (
         <div className="app-shell">
             <div className={`sidebar-overlay ${sidebarOpen ? "show" : ""}`} onClick={() => setSidebarOpen(false)} />
-            <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
-                <Sidebar hideSidebar={() => setSidebarOpen(false)} openPasswordModal={() => setShowPasswordModal(true)} />
-            </aside>
+            <Sidebar isOpen={sidebarOpen} hideSidebar={() => setSidebarOpen(false)} openPasswordModal={() => setShowPasswordModal(true)} />
             <main className="main-content">
                 <header className="mobile-header">
                     <button className="menu-btn" onClick={() => setSidebarOpen(true)}>☰</button>
@@ -226,26 +249,72 @@ function ProtectedLayout() {
                     </div>
                 </header>
                 <Routes>
-                    <Route path="/" element={
-                        getRole() === "SYSTEM_ADMIN"
-                            ? <Navigate to="/system" replace />
-                            : <Navigate to="/orders" replace />
-                    } />
-                    <Route path="/orders" element={<OrdersBoard />} />
-                    <Route path="/billing" element={<Billing />} />
-                    <Route path="/admin/menu" element={<MenuAdmin />} />
-                    <Route path="/admin/tables" element={<TablesAdmin />} />
-                    <Route path="/admin/staff" element={<StaffAdmin />} />
-                    <Route path="/admin/report" element={<DailyReport />} />
-                    <Route path="/admin/branches" element={
-                        getRole() === "SUPER_ADMIN" ? <BranchAdmin /> : <Navigate to="/admin/menu" replace />
-                    } />
-                    <Route path="/system" element={<SystemAdmin />} />
-                    <Route path="*" element={
-                        getRole() === "SYSTEM_ADMIN"
-                            ? <Navigate to="/system" replace />
-                            : <Navigate to="/orders" replace />
-                    } />
+                    <Route path="/" element={<Navigate to={getDefaultHomePath(getRole())} replace />} />
+                    <Route
+                        path="/orders"
+                        element={
+                            <RequireRole allowedRoles={["KITCHEN", "CASHIER", "BRANCH_ADMIN", "SUPER_ADMIN"]}>
+                                <OrdersBoard />
+                            </RequireRole>
+                        }
+                    />
+                    <Route
+                        path="/billing"
+                        element={
+                            <RequireRole allowedRoles={["CASHIER", "BRANCH_ADMIN", "SUPER_ADMIN"]}>
+                                <Billing />
+                            </RequireRole>
+                        }
+                    />
+                    <Route
+                        path="/admin/menu"
+                        element={
+                            <RequireRole allowedRoles={["BRANCH_ADMIN", "SUPER_ADMIN"]}>
+                                <MenuAdmin />
+                            </RequireRole>
+                        }
+                    />
+                    <Route
+                        path="/admin/tables"
+                        element={
+                            <RequireRole allowedRoles={["BRANCH_ADMIN", "SUPER_ADMIN"]}>
+                                <TablesAdmin />
+                            </RequireRole>
+                        }
+                    />
+                    <Route
+                        path="/admin/staff"
+                        element={
+                            <RequireRole allowedRoles={["BRANCH_ADMIN", "SUPER_ADMIN"]}>
+                                <StaffAdmin />
+                            </RequireRole>
+                        }
+                    />
+                    <Route
+                        path="/admin/report"
+                        element={
+                            <RequireRole allowedRoles={["BRANCH_ADMIN", "SUPER_ADMIN"]}>
+                                <DailyReport />
+                            </RequireRole>
+                        }
+                    />
+                    <Route
+                        path="/admin/branches"
+                        element={
+                            <RequireRole allowedRoles={["SUPER_ADMIN"]}>
+                                <BranchAdmin />
+                            </RequireRole>
+                        }
+                    />
+                    <Route
+                        path="/system"
+                        element={
+                            <RequireRole allowedRoles={["SYSTEM_ADMIN"]}>
+                                <SystemAdmin />
+                            </RequireRole>
+                        }
+                    />
+                    <Route path="*" element={<Navigate to={getDefaultHomePath(getRole())} replace />} />
                 </Routes>
             </main>
 
@@ -259,8 +328,11 @@ export default function App() {
         <BrowserRouter>
             <Routes>
                 <Route path="/login" element={<Login />} />
+                <Route path="/kiosk" element={<TableKiosk />} />
+                <Route path="/table/:token" element={<TableKiosk />} />
                 <Route path="/*" element={<ProtectedLayout />} />
             </Routes>
         </BrowserRouter>
     );
 }
+

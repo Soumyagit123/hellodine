@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models.tenancy import Restaurant, Branch, Table, TableQRToken
 from app.models.auth import StaffUser, StaffRole
 from app.services.auth_service import get_current_staff
+from app.services.cache_service import cache
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -19,15 +20,25 @@ class RestaurantCreate(BaseModel):
     name: str
     gstin: str | None = None
     fssai_license_number: str | None = None
-    whatsapp_phone_number_id: str
-    whatsapp_display_number: str
+    whatsapp_phone_number_id: str | None = None
+    whatsapp_display_number: str | None = None
     whatsapp_access_token: str | None = None
     whatsapp_verify_token: str = "hellodine"
     whatsapp_app_secret: str | None = None
     whatsapp_app_id: str | None = None
+    merchant_upi_id: str | None = None
+    subscription_plan: str = "STARTER"
+    subscription_status: str = "ACTIVE"
+    max_branches: int = 1
 
 class RestaurantUpdate(BaseModel):
     name: str | None = None
+    gstin: str | None = None
+    fssai_license_number: str | None = None
+    merchant_upi_id: str | None = None
+    subscription_plan: str | None = None
+    subscription_status: str | None = None
+    subscription_expires_at: datetime | None = None
     max_branches: int | None = None
     is_active: bool | None = None
     whatsapp_phone_number_id: str | None = None
@@ -36,6 +47,15 @@ class RestaurantUpdate(BaseModel):
     whatsapp_verify_token: str | None = None
     whatsapp_app_secret: str | None = None
     whatsapp_app_id: str | None = None
+
+class SubscriptionRenewalRequest(BaseModel):
+    plan: str  # "STARTER" | "PRO_AI" | "ANNUAL_PRO"
+    utr_reference: str
+    amount: int
+
+class SubscriptionApproveRequest(BaseModel):
+    days: int = 30
+    plan: str | None = None
 
 class ResetPasswordRequest(BaseModel):
     new_password: str
@@ -77,18 +97,42 @@ class StaffOut(BaseModel):
 
 # ─── Restaurants ─────────────────────────────────────────────────────────────
 @router.post("/restaurants")
-async def create_restaurant(data: RestaurantCreate, db: AsyncSession = Depends(get_db)):
-    r = Restaurant(**data.model_dump())
+async def create_restaurant(
+    data: RestaurantCreate,
+    db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
+):
+    if current_staff.role != StaffRole.SYSTEM_ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only SaaS System Admin can onboard new restaurants")
+
+    payload = data.model_dump()
+    if not payload.get("whatsapp_phone_number_id"):
+        payload["whatsapp_phone_number_id"] = f"kiosk_{uuid.uuid4().hex[:12]}"
+    if not payload.get("whatsapp_display_number"):
+        payload["whatsapp_display_number"] = "+91 0000000000"
+
+    r = Restaurant(**payload)
     db.add(r)
     await db.commit()
     await db.refresh(r)
+    cache.invalidate_prefix("admin_all_restaurants")
     return r
 
 
 @router.get("/restaurants")
-async def list_restaurants(db: AsyncSession = Depends(get_db)):
+async def list_restaurants(
+    db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
+):
+    if current_staff.role != StaffRole.SYSTEM_ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only SaaS System Admin can list all restaurants")
+    cached = cache.get("admin_all_restaurants")
+    if cached is not None:
+        return cached
     result = await db.execute(select(Restaurant).order_by(Restaurant.created_at.desc()))
-    return result.scalars().all()
+    restaurants = result.scalars().all()
+    cache.set("admin_all_restaurants", restaurants, ttl_seconds=60)
+    return restaurants
 
 
 @router.get("/restaurants/{restaurant_id}")
@@ -101,7 +145,17 @@ async def get_restaurant(restaurant_id: uuid.UUID, db: AsyncSession = Depends(ge
 
 
 @router.patch("/restaurants/{restaurant_id}")
-async def update_restaurant(restaurant_id: uuid.UUID, data: RestaurantUpdate, db: AsyncSession = Depends(get_db)):
+async def update_restaurant(
+    restaurant_id: uuid.UUID,
+    data: RestaurantUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
+):
+    if current_staff.role not in (StaffRole.SYSTEM_ADMIN, StaffRole.SUPER_ADMIN):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions to update restaurant settings")
+    if current_staff.role == StaffRole.SUPER_ADMIN and str(current_staff.restaurant_id) != str(restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only update your own restaurant settings")
+
     result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
     r = result.scalar_one_or_none()
     if not r:
@@ -113,12 +167,21 @@ async def update_restaurant(restaurant_id: uuid.UUID, data: RestaurantUpdate, db
 
     await db.commit()
     await db.refresh(r)
+    cache.invalidate_prefix("admin_all_restaurants")
+    cache.invalidate_prefix(f"static_menu:")
     return r
 
 
 @router.post("/restaurants/{restaurant_id}/reset-owner-password")
-async def reset_owner_password(restaurant_id: uuid.UUID, data: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+async def reset_owner_password(
+    restaurant_id: uuid.UUID,
+    data: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
+):
     """Allow System Admin to reset the password for a restaurant's owner (Super Admin)."""
+    if current_staff.role != StaffRole.SYSTEM_ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only SaaS System Admin can reset owner passwords")
     from app.services.auth_service import hash_password
     # Find the Super Admin for this restaurant
     result = await db.execute(select(StaffUser).where(StaffUser.restaurant_id == restaurant_id, StaffUser.role == StaffRole.SUPER_ADMIN))
@@ -129,6 +192,112 @@ async def reset_owner_password(restaurant_id: uuid.UUID, data: ResetPasswordRequ
     owner.password_hash = hash_password(data.new_password)
     await db.commit()
     return {"ok": True}
+
+
+# ─── SaaS Subscription & Plan Endpoints ─────────────────────────────────────
+SAAS_PLANS = [
+    {
+        "id": "STARTER",
+        "name": "Starter All-In-One Plan (Launch Offer)",
+        "price_monthly": 1999,
+        "duration_days": 30,
+        "badge": "Current Launch Offer — All AI Features Included!",
+        "features": [
+            "Smart Table Kiosk UI with Visual Food Photos",
+            "Full AI Voice & Chat Waiter (Mic + Speaker)",
+            "AI Top-3 Bestseller Recommender & Auto-Pick Dish",
+            "Kids Cartoon Video Theatre & Birthday Song Celebration",
+            "Live Kitchen Kanban Board & Cashier GST Billing",
+            "Direct Table UPI QR Code Payment to Your Bank",
+        ],
+    },
+    {
+        "id": "PRO_AI",
+        "name": "Pro AI Multi-Table Plan",
+        "price_monthly": 3499,
+        "duration_days": 30,
+        "badge": "Future Advanced AI Tier",
+        "features": [
+            "Everything in Starter Plan + Unlimited Tables",
+            "Multi-Branch Chain Management & Analytics",
+            "Future Advanced AI Voice Personalization & CRM",
+            "Priority 24/7 Support & Custom Branding",
+        ],
+    },
+    {
+        "id": "ANNUAL_PRO",
+        "name": "Annual All-Access Plan (Save 2 Months)",
+        "price_monthly": 19990,
+        "duration_days": 365,
+        "badge": "Best Value — 12 Months",
+        "features": [
+            "Full Year Access to All Kiosk, Kitchen, Cashier & AI Waiter Features",
+            "2 Months Free + Free Menu Onboarding",
+        ],
+    },
+]
+
+
+@router.get("/saas/plans")
+async def get_saas_plans():
+    """Return available SaaS subscription plans and the platform owner's UPI ID for direct 0%-fee QR payment."""
+    from app.config import settings
+    return {
+        "owner_upi_id": settings.SAAS_OWNER_UPI_ID,
+        "owner_name": settings.SAAS_OWNER_NAME,
+        "plans": SAAS_PLANS,
+    }
+
+
+@router.post("/restaurants/{restaurant_id}/request-renewal")
+async def request_subscription_renewal(
+    restaurant_id: uuid.UUID,
+    data: SubscriptionRenewalRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Restaurant owner submits UPI UTR after scanning SaaS Owner's QR code."""
+    result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+    r = result.scalar_one_or_none()
+    if not r:
+        raise HTTPException(404, "Restaurant not found")
+
+    r.pending_renewal_plan = data.plan
+    r.pending_renewal_utr = data.utr_reference.strip()
+    r.pending_renewal_amount = data.amount
+    await db.commit()
+    await db.refresh(r)
+    return {"ok": True, "message": "Renewal payment submitted! Your plan will be updated shortly."}
+
+
+@router.post("/restaurants/{restaurant_id}/approve-renewal")
+async def approve_subscription_renewal(
+    restaurant_id: uuid.UUID,
+    data: SubscriptionApproveRequest,
+    db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
+):
+    """System Admin approves a restaurant's subscription renewal in 1 click and extends expiry."""
+    if current_staff.role != StaffRole.SYSTEM_ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only SaaS System Admin can approve subscription renewals")
+    from datetime import timedelta, timezone
+    result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+    r = result.scalar_one_or_none()
+    if not r:
+        raise HTTPException(404, "Restaurant not found")
+
+    now = datetime.now(timezone.utc)
+    base_time = r.subscription_expires_at if (r.subscription_expires_at and r.subscription_expires_at > now) else now
+    r.subscription_expires_at = base_time + timedelta(days=data.days)
+    r.subscription_plan = data.plan or r.pending_renewal_plan or r.subscription_plan or "STARTER"
+    r.subscription_status = "ACTIVE"
+    r.is_active = True
+    r.pending_renewal_plan = None
+    r.pending_renewal_utr = None
+    r.pending_renewal_amount = None
+
+    await db.commit()
+    await db.refresh(r)
+    return r
 
 
 # ─── Branches ────────────────────────────────────────────────────────────────
@@ -153,17 +322,25 @@ async def create_branch(data: BranchCreate, db: AsyncSession = Depends(get_db), 
     db.add(b)
     await db.commit()
     await db.refresh(b)
+    cache.invalidate_prefix(f"branches:{data.restaurant_id}")
     return b
 
 
 @router.get("/branches")
 async def list_branches(restaurant_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
+    cache_key = f"branches:{restaurant_id}:{current_staff.role.value}:{current_staff.branch_id or 'all'}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     if current_staff.role == StaffRole.BRANCH_ADMIN:
         # A branch admin should only see their own branch in listings
         result = await db.execute(select(Branch).where(Branch.id == current_staff.branch_id))
     else:
         result = await db.execute(select(Branch).where(Branch.restaurant_id == restaurant_id))
-    return result.scalars().all()
+    branches = result.scalars().all()
+    cache.set(cache_key, branches, ttl_seconds=120)
+    return branches
 
 
 # ─── Tables ──────────────────────────────────────────────────────────────────
@@ -172,13 +349,14 @@ async def create_table(data: TableCreate, db: AsyncSession = Depends(get_db), cu
     if current_staff.role == StaffRole.BRANCH_ADMIN:
         if str(data.branch_id) != str(current_staff.branch_id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Branch admins can only create tables for their assigned branch")
-    elif current_staff.role != StaffRole.SUPER_ADMIN:
+    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN]:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
     t = Table(**data.model_dump())
     db.add(t)
     await db.commit()
     await db.refresh(t)
+    cache.invalidate_prefix(f"tables:{data.branch_id}")
     return t
 
 
@@ -187,9 +365,16 @@ async def list_tables(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db), 
     if current_staff.role == StaffRole.BRANCH_ADMIN:
         if str(branch_id) != str(current_staff.branch_id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to this branch's tables")
-            
+
+    cache_key = f"tables:{branch_id}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     result = await db.execute(select(Table).where(Table.branch_id == branch_id, Table.is_active == True))
-    return result.scalars().all()
+    tables = result.scalars().all()
+    cache.set(cache_key, tables, ttl_seconds=120)
+    return tables
 
 
 @router.post("/tables/{table_id}/qr")
@@ -223,8 +408,17 @@ async def generate_qr(table_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         f"token={token_str}"
     )
     wa_link = f"https://wa.me/{restaurant.whatsapp_display_number}?text={wa_message.replace(chr(10), '%0A')}"
+    kiosk_path = f"/table/{token_str}"
 
-    return {"token": token_str, "wa_link": wa_link, "table_number": table.table_number}
+    return {
+        "token": token_str,
+        "wa_link": wa_link,
+        "kiosk_path": kiosk_path,
+        "table_id": str(table.id),
+        "table_number": table.table_number,
+        "branch_id": str(branch.id),
+    }
+
 
 
 # ─── Staff ────────────────────────────────────────────────────────────────────
@@ -238,7 +432,7 @@ async def create_staff(data: StaffCreate, db: AsyncSession = Depends(get_db), cu
         # Branch admin cannot create other Branch Admins or Super Admins
         if data.role in [StaffRole.SUPER_ADMIN, StaffRole.BRANCH_ADMIN]:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Branch admins cannot create other admins")
-    elif current_staff.role != StaffRole.SUPER_ADMIN:
+    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN]:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
     from app.services.auth_service import hash_password

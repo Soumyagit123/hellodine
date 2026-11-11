@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { QRCodeCanvas } from "qrcode.react";
 import client from "../../api/client";
 
 interface Branch {
@@ -15,7 +16,17 @@ interface Branch {
 
 export default function BranchAdmin() {
     const [branches, setBranches] = useState<Branch[]>([]);
+    const [restaurant, setRestaurant] = useState<any>(null);
+    const [saasConfig, setSaasConfig] = useState<any>(null);
     const [maxBranches, setMaxBranches] = useState(1);
+    const [merchantUpiInput, setMerchantUpiInput] = useState("");
+    const [savingUpi, setSavingUpi] = useState(false);
+
+    // Subscription Renewal Modal State
+    const [selectedPlanForPay, setSelectedPlanForPay] = useState<any | null>(null);
+    const [utrInput, setUtrInput] = useState("");
+    const [submittingRenewal, setSubmittingRenewal] = useState(false);
+
     const [loading, setLoading] = useState(true);
     const [showAdd, setShowAdd] = useState(false);
     const [formData, setFormData] = useState({
@@ -52,10 +63,58 @@ export default function BranchAdmin() {
 
     const fetchRestaurantInfo = async () => {
         try {
-            const res = await client.get(`/admin/restaurants/${restaurantId}`);
-            if (res.data) setMaxBranches(res.data.max_branches);
+            const [res, plansRes] = await Promise.all([
+                client.get(`/admin/restaurants/${restaurantId}`),
+                client.get("/admin/saas/plans"),
+            ]);
+            if (res.data) {
+                setRestaurant(res.data);
+                setMaxBranches(res.data.max_branches || 1);
+                setMerchantUpiInput(res.data.merchant_upi_id || "");
+            }
+            if (plansRes.data) {
+                setSaasConfig(plansRes.data);
+            }
         } catch (err) {
             console.error("Failed to fetch restaurant info", err);
+        }
+    };
+
+    const handleSaveMerchantUpi = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!restaurantId) return;
+        setSavingUpi(true);
+        try {
+            const res = await client.patch(`/admin/restaurants/${restaurantId}`, {
+                merchant_upi_id: merchantUpiInput.trim(),
+            });
+            setRestaurant(res.data);
+            alert("✅ Merchant UPI ID saved! All Table QR invoices for your restaurant will now receive money directly to this UPI ID.");
+        } catch {
+            alert("Failed to update Merchant UPI ID");
+        } finally {
+            setSavingUpi(false);
+        }
+    };
+
+    const handleSubmitRenewal = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!selectedPlanForPay || !utrInput.trim()) return;
+        setSubmittingRenewal(true);
+        try {
+            await client.post(`/admin/restaurants/${restaurantId}/request-renewal`, {
+                plan: selectedPlanForPay.id,
+                utr_reference: utrInput.trim(),
+                amount: selectedPlanForPay.price_monthly,
+            });
+            setSelectedPlanForPay(null);
+            setUtrInput("");
+            await fetchRestaurantInfo();
+            alert("✅ Subscription payment submitted! The HelloDine SaaS Provider has been notified to activate your renewal.");
+        } catch (err: any) {
+            alert(err.response?.data?.detail || "Failed to submit renewal");
+        } finally {
+            setSubmittingRenewal(false);
         }
     };
 
@@ -214,8 +273,152 @@ export default function BranchAdmin() {
                         ⚠️ You have reached your branch limit ({maxBranches}).
                     </p>
                     <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "4px" }}>
-                        To open more locations, please contact the application provider to upgrade your plan.
+                        To open more locations, please upgrade your subscription plan below.
                     </p>
+                </div>
+            )}
+
+            {/* ─── MERCHANT UPI ID SETTING (FOR CUSTOMER TABLE QR PAYMENTS) ─────────── */}
+            <div className="card" style={{ marginTop: "36px", padding: "24px" }}>
+                <h2 style={{ fontSize: "1.35rem", fontWeight: 800, marginBottom: "6px" }}>
+                    🏦 Restaurant Merchant UPI ID (Table QR Payment Receiver)
+                </h2>
+                <p style={{ color: "var(--text-muted)", fontSize: "0.88rem", marginBottom: "16px" }}>
+                    Enter your restaurant's official UPI ID (Google Pay Business / PhonePe / Paytm / Bank VPA). When customers scan the GST Bill QR code at any table, 100% of their payment goes directly to this UPI account.
+                </p>
+                <form onSubmit={handleSaveMerchantUpi} style={{ display: "flex", gap: "12px", maxWidth: "560px", flexWrap: "wrap" }}>
+                    <input
+                        className="input"
+                        style={{ flex: 1, minWidth: "260px" }}
+                        placeholder="e.g. yourrestaurant@okaxis or 9876543210@ybl"
+                        value={merchantUpiInput}
+                        onChange={(e) => setMerchantUpiInput(e.target.value)}
+                        required
+                    />
+                    <button type="submit" className="btn btn-primary" disabled={savingUpi}>
+                        {savingUpi ? "Saving…" : "💾 Save Merchant UPI ID"}
+                    </button>
+                </form>
+            </div>
+
+            {/* ─── SAAS SUBSCRIPTION & PLAN MANAGEMENT (PHASE 1: DIRECT UPI QR) ─────── */}
+            <div className="card" style={{ marginTop: "28px", padding: "24px", border: "1px solid rgba(255,107,53,0.35)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px", marginBottom: "20px" }}>
+                    <div>
+                        <h2 style={{ fontSize: "1.35rem", fontWeight: 800 }}>
+                            🚀 HelloDine SaaS Subscription & Plan
+                        </h2>
+                        <p style={{ color: "var(--text-muted)", fontSize: "0.88rem" }}>
+                            Current Plan:{" "}
+                            <strong style={{ color: "var(--green)" }}>
+                                {restaurant?.subscription_plan || "STARTER"} ({restaurant?.subscription_status || "ACTIVE"})
+                            </strong>
+                            {restaurant?.subscription_expires_at && (
+                                <> · Valid until <strong>{new Date(restaurant.subscription_expires_at).toLocaleDateString()}</strong></>
+                            )}
+                        </p>
+                    </div>
+                    {restaurant?.pending_renewal_plan && (
+                        <div className="badge" style={{ background: "rgba(255,159,67,0.2)", color: "var(--orange)", padding: "8px 14px" }}>
+                            ⏳ Pending Verification: {restaurant.pending_renewal_plan} (UTR: {restaurant.pending_renewal_utr})
+                        </div>
+                    )}
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(275px, 1fr))", gap: "18px" }}>
+                    {(saasConfig?.plans || []).map((plan: any) => {
+                        const isCurrent = (restaurant?.subscription_plan || "STARTER") === plan.id;
+                        return (
+                            <div
+                                key={plan.id}
+                                style={{
+                                    background: "rgba(255,255,255,0.03)",
+                                    border: isCurrent ? "2px solid var(--green)" : "1px solid var(--border)",
+                                    borderRadius: "14px",
+                                    padding: "20px",
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    justifyContent: "space-between",
+                                }}
+                            >
+                                <div>
+                                    <div className="badge badge-new" style={{ marginBottom: "8px" }}>{plan.badge}</div>
+                                    <h3 style={{ fontSize: "1.1rem", fontWeight: 800, marginBottom: "6px" }}>{plan.name}</h3>
+                                    <div style={{ fontSize: "1.7rem", fontWeight: 900, color: "var(--green)", marginBottom: "14px" }}>
+                                        ₹{plan.price_monthly}
+                                        <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", fontWeight: 500 }}>
+                                            {" "}/ {plan.duration_days === 365 ? "year" : "month"}
+                                        </span>
+                                    </div>
+                                    <ul style={{ paddingLeft: "18px", fontSize: "0.83rem", color: "var(--text-muted)", lineHeight: 1.6, marginBottom: "18px" }}>
+                                        {(plan.features || []).map((f: string, idx: number) => (
+                                            <li key={idx}>✅ {f}</li>
+                                        ))}
+                                    </ul>
+                                </div>
+                                <button
+                                    className="btn btn-primary"
+                                    style={{ width: "100%", justifyContent: "center" }}
+                                    onClick={() => setSelectedPlanForPay(plan)}
+                                >
+                                    {isCurrent ? "💳 Renew Current Plan" : "⚡ Subscribe / Upgrade via UPI QR"}
+                                </button>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {/* ─── MODAL: SCAN SAAS OWNER UPI QR TO SUBSCRIBE / RENEW ──────────────── */}
+            {selectedPlanForPay && saasConfig && (
+                <div className="modal-overlay" onClick={() => setSelectedPlanForPay(null)}>
+                    <div className="card modal" style={{ maxWidth: "460px", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+                        <h2 style={{ marginBottom: "6px" }}>💳 Subscribe: {selectedPlanForPay.name}</h2>
+                        <p className="text-muted text-sm" style={{ marginBottom: "16px" }}>
+                            Scan with GPay, PhonePe, or Paytm to pay <strong>{saasConfig.owner_name}</strong> (0% Gateway Fee):
+                        </p>
+
+                        <div style={{ background: "#fff", padding: "16px", borderRadius: "12px", display: "inline-block", marginBottom: "12px" }}>
+                            <QRCodeCanvas
+                                value={`upi://pay?pa=${encodeURIComponent(saasConfig.owner_upi_id)}&pn=${encodeURIComponent(
+                                    saasConfig.owner_name
+                                )}&am=${selectedPlanForPay.price_monthly}&cu=INR&tn=${encodeURIComponent(
+                                    `HelloDine_${selectedPlanForPay.id}_${restaurant?.name || "Sub"}`
+                                )}`}
+                                size={185}
+                                level="H"
+                                includeMargin={true}
+                            />
+                        </div>
+
+                        <div style={{ fontSize: "1.3rem", fontWeight: 900, color: "var(--green)", marginBottom: "4px" }}>
+                            Amount: ₹{selectedPlanForPay.price_monthly}
+                        </div>
+                        <div className="text-muted text-sm" style={{ marginBottom: "16px" }}>
+                            Payable to UPI ID: <strong>{saasConfig.owner_upi_id}</strong>
+                        </div>
+
+                        <form onSubmit={handleSubmitRenewal}>
+                            <div className="input-group" style={{ textAlign: "left" }}>
+                                <label className="input-label">Enter 12-Digit UPI Ref / UTR Number after payment</label>
+                                <input
+                                    className="input"
+                                    placeholder="e.g. 431289451209"
+                                    value={utrInput}
+                                    onChange={(e) => setUtrInput(e.target.value)}
+                                    required
+                                />
+                            </div>
+                            <div className="flex gap-2">
+                                <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setSelectedPlanForPay(null)}>
+                                    Cancel
+                                </button>
+                                <button type="submit" className="btn btn-success" style={{ flex: 1 }} disabled={submittingRenewal}>
+                                    {submittingRenewal ? "Submitting…" : "✅ Submit Payment UTR"}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
                 </div>
             )}
         </div>

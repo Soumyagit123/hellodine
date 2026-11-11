@@ -20,33 +20,39 @@ async def get_or_create_cart(session_id: uuid.UUID, db: AsyncSession) -> Cart:
     result = await db.execute(
         select(Cart).where(Cart.session_id == session_id, Cart.status == CartStatus.OPEN)
         .options(selectinload(Cart.items).selectinload(CartItem.modifiers))
+        .order_by(Cart.updated_at.desc())
     )
-    cart = result.scalars().first()
-    if not cart:
-        cart = Cart(session_id=session_id)
-        db.add(cart)
-        await db.flush()
+    carts = result.scalars().all()
+    if carts:
+        # If there are duplicate open carts, pick the one with items or the newest
+        cart = next((c for c in carts if c.items), carts[0])
+        for extra in carts:
+            if extra.id != cart.id:
+                extra.status = CartStatus.CHECKED_OUT
+        return cart
+
+    cart = Cart(session_id=session_id)
+    db.add(cart)
+    await db.flush()
     return cart
 
 
 async def recalculate_cart(cart: Cart, db: AsyncSession):
-    """Recompute subtotal, CGST, SGST, total from cart items."""
+    """Recompute subtotal, CGST, SGST, total from cart items in a single batch query."""
     result = await db.execute(
-        select(CartItem).where(CartItem.cart_id == cart.id)
+        select(CartItem, MenuItem)
+        .outerjoin(MenuItem, CartItem.menu_item_id == MenuItem.id)
+        .where(CartItem.cart_id == cart.id)
         .options(selectinload(CartItem.modifiers))
     )
-    items = result.scalars().all()
+    rows = result.all()
 
     subtotal = Decimal("0")
     cgst = Decimal("0")
     sgst = Decimal("0")
 
-    for ci in items:
-        # Get GST percent from menu_item
-        item_result = await db.execute(select(MenuItem).where(MenuItem.id == ci.menu_item_id))
-        menu_item = item_result.scalar_one_or_none()
+    for ci, menu_item in rows:
         if not menu_item:
-            print(f"WARNING: MenuItem {ci.menu_item_id} not found for cart item {ci.id}")
             continue
         gst_rate = Decimal(str(menu_item.gst_percent)) / 100
 

@@ -24,7 +24,10 @@ def _extract_text(msg: dict) -> tuple[str, str]:
 
 
 async def ingest_webhook(state: BotState) -> BotState:
-    """Parse raw WA payload into state fields."""
+    """Parse raw WA payload into state fields (or pass through if already populated by Kiosk API)."""
+    if state.get("message_type") == "kiosk":
+        return state
+
     raw = state.get("raw_message", {})
     entry = raw.get("entry", [{}])[0]
     changes = entry.get("changes", [{}])[0]
@@ -59,7 +62,37 @@ async def ingest_webhook(state: BotState) -> BotState:
 
 async def resolve_session(state: BotState) -> BotState:
     """Handle QR scan (creates session) or look up existing active session."""
+    if state.get("message_type") == "kiosk" and state.get("session_id"):
+        # Fast path: /api/kiosk/chat already verified the session and passed restaurant_id, branch_id, table_id, customer_id!
+        if (
+            state.get("restaurant_id")
+            and state.get("branch_id")
+            and state.get("table_id")
+            and state.get("customer_id")
+        ):
+            return state
+
+        async with AsyncSessionLocal() as db:
+            sess_result = await db.execute(
+                select(TableSession).where(
+                    TableSession.id == uuid.UUID(state["session_id"]),
+                    TableSession.status == SessionStatus.ACTIVE,
+                )
+            )
+            session = sess_result.scalar_one_or_none()
+            if not session:
+                state["error"] = "no_session"
+                return state
+            session.last_message_at = datetime.now(timezone.utc)
+            await db.commit()
+            state["restaurant_id"] = str(session.restaurant_id)
+            state["branch_id"] = str(session.branch_id)
+            state["table_id"] = str(session.table_id)
+            state["customer_id"] = str(session.customer_id)
+        return state
+
     text = state.get("message_text", "")
+
     restaurant_id = state.get("restaurant_id")
     wa_user_id = state.get("wa_user_id")
 

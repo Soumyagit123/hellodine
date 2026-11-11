@@ -5,11 +5,12 @@ from app.config import settings
 engine = create_async_engine(
     settings.DATABASE_URL, 
     echo=False, 
-    pool_pre_ping=True,
+    pool_pre_ping=False,
     pool_size=20,
     max_overflow=10,
-    pool_timeout=60,
+    pool_timeout=30,
     pool_recycle=1800,
+    connect_args={"statement_cache_size": 0},
 )
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

@@ -4,12 +4,16 @@ import client from "../../api/client";
 interface Restaurant {
     id: string;
     name: string;
-    whatsapp_phone_number_id: string;
-    whatsapp_display_number: string;
-    whatsapp_access_token?: string;
-    whatsapp_verify_token?: string;
-    whatsapp_app_secret?: string;
-    whatsapp_app_id?: string;
+    gstin?: string;
+    fssai_license_number?: string;
+    merchant_upi_id?: string;
+    subscription_plan?: string;
+    subscription_status?: string;
+    subscription_expires_at?: string;
+    pending_renewal_plan?: string;
+    pending_renewal_utr?: string;
+    pending_renewal_amount?: number;
+    whatsapp_display_number?: string;
     max_branches: number;
     is_active: boolean;
     created_at: string;
@@ -24,12 +28,11 @@ export default function SystemAdmin() {
     const [newPass, setNewPass] = useState("");
     const [formData, setFormData] = useState({
         name: "",
-        whatsapp_phone_number_id: "",
-        whatsapp_display_number: "",
-        whatsapp_access_token: "",
-        whatsapp_verify_token: "hellodine",
-        whatsapp_app_secret: "",
-        whatsapp_app_id: "",
+        contact_phone: "",
+        gstin: "",
+        fssai_license_number: "",
+        merchant_upi_id: "",
+        subscription_plan: "STARTER",
         max_branches: 1,
         owner_phone: "",
         owner_password: ""
@@ -53,15 +56,14 @@ export default function SystemAdmin() {
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
         try {
-            // 1. Create Restaurant
+            // 1. Create Restaurant (Kiosk SaaS — no Meta/WhatsApp API tokens required)
             const restRes = await client.post("/admin/restaurants", {
                 name: formData.name,
-                whatsapp_phone_number_id: formData.whatsapp_phone_number_id,
-                whatsapp_display_number: formData.whatsapp_display_number,
-                whatsapp_access_token: formData.whatsapp_access_token,
-                whatsapp_verify_token: formData.whatsapp_verify_token,
-                whatsapp_app_secret: formData.whatsapp_app_secret,
-                whatsapp_app_id: formData.whatsapp_app_id,
+                gstin: formData.gstin || undefined,
+                fssai_license_number: formData.fssai_license_number || undefined,
+                merchant_upi_id: formData.merchant_upi_id || undefined,
+                subscription_plan: formData.subscription_plan || "STARTER",
+                whatsapp_display_number: formData.contact_phone || formData.owner_phone,
                 max_branches: formData.max_branches
             });
 
@@ -76,7 +78,17 @@ export default function SystemAdmin() {
                 password: formData.owner_password
             });
 
-            setFormData({ name: "", whatsapp_phone_number_id: "", whatsapp_display_number: "", whatsapp_access_token: "", whatsapp_verify_token: "hellodine", whatsapp_app_secret: "", whatsapp_app_id: "", max_branches: 1, owner_phone: "", owner_password: "" });
+            setFormData({
+                name: "",
+                contact_phone: "",
+                gstin: "",
+                fssai_license_number: "",
+                merchant_upi_id: "",
+                subscription_plan: "STARTER",
+                max_branches: 1,
+                owner_phone: "",
+                owner_password: ""
+            });
             setShowAdd(false);
             fetchRestaurants();
             alert("Restaurant and Owner Account created successfully!");
@@ -91,18 +103,30 @@ export default function SystemAdmin() {
         try {
             await client.patch(`/admin/restaurants/${editTarget.id}`, {
                 name: formData.name,
+                gstin: formData.gstin || null,
+                fssai_license_number: formData.fssai_license_number || null,
+                merchant_upi_id: formData.merchant_upi_id || null,
+                subscription_plan: formData.subscription_plan,
+                whatsapp_display_number: formData.contact_phone || undefined,
                 max_branches: formData.max_branches,
-                whatsapp_phone_number_id: formData.whatsapp_phone_number_id,
-                whatsapp_display_number: formData.whatsapp_display_number,
-                whatsapp_access_token: formData.whatsapp_access_token,
-                whatsapp_verify_token: formData.whatsapp_verify_token,
-                whatsapp_app_secret: formData.whatsapp_app_secret,
-                whatsapp_app_id: formData.whatsapp_app_id
             });
             setEditTarget(null);
             fetchRestaurants();
         } catch (err) {
             alert("Failed to update restaurant");
+        }
+    };
+
+    const handleApproveRenewal = async (r: Restaurant, days: number, planOverride?: string) => {
+        try {
+            await client.post(`/admin/restaurants/${r.id}/approve-renewal`, {
+                days,
+                plan: planOverride || r.pending_renewal_plan || r.subscription_plan || "STARTER",
+            });
+            fetchRestaurants();
+            alert(`✅ Subscription activated for ${r.name} (+${days} days)!`);
+        } catch {
+            alert("Failed to approve subscription renewal");
         }
     };
 
@@ -126,12 +150,11 @@ export default function SystemAdmin() {
         setFormData({
             ...formData,
             name: r.name,
-            whatsapp_phone_number_id: r.whatsapp_phone_number_id,
-            whatsapp_display_number: r.whatsapp_display_number,
-            whatsapp_access_token: r.whatsapp_access_token || "",
-            whatsapp_verify_token: r.whatsapp_verify_token || "hellodine",
-            whatsapp_app_secret: r.whatsapp_app_secret || "",
-            whatsapp_app_id: r.whatsapp_app_id || "",
+            contact_phone: r.whatsapp_display_number || "",
+            gstin: r.gstin || "",
+            fssai_license_number: r.fssai_license_number || "",
+            merchant_upi_id: r.merchant_upi_id || "",
+            subscription_plan: r.subscription_plan || "STARTER",
             max_branches: r.max_branches
         });
     };
@@ -196,13 +219,13 @@ export default function SystemAdmin() {
                                 <div style={{ background: "rgba(255,255,255,0.03)", padding: "16px", borderRadius: "8px", marginBottom: "20px", border: "1px solid var(--border)" }}>
                                     <h3 style={{ fontSize: "0.9rem", marginBottom: "12px", color: "var(--orange)" }}>Initial Owner Account</h3>
                                     <div className="input-group">
-                                        <label className="input-label">Owner Phone (+91...)</label>
+                                        <label className="input-label">Owner Login ID (10-Digit Mobile or Custom Username)</label>
                                         <input
                                             className="input"
                                             required
                                             value={formData.owner_phone}
                                             onChange={e => setFormData({ ...formData, owner_phone: e.target.value })}
-                                            placeholder="+91 90000 00000"
+                                            placeholder="e.g. 9876543210 or pizza_owner"
                                         />
                                     </div>
                                     <div className="input-group" style={{ marginBottom: 0 }}>
@@ -220,63 +243,55 @@ export default function SystemAdmin() {
                             )}
 
                             <div className="input-group">
-                                <label className="input-label">WhatsApp Phone Number ID</label>
+                                <label className="input-label">Restaurant Merchant UPI ID (For Table QR Payments)</label>
                                 <input
                                     className="input"
-                                    required
-                                    value={formData.whatsapp_phone_number_id}
-                                    onChange={e => setFormData({ ...formData, whatsapp_phone_number_id: e.target.value })}
-                                    placeholder="from Meta Dev Portal"
+                                    value={formData.merchant_upi_id}
+                                    onChange={e => setFormData({ ...formData, merchant_upi_id: e.target.value })}
+                                    placeholder="e.g. restaurantname@okaxis or 9876543210@ybl"
                                 />
                             </div>
                             <div className="input-group">
-                                <label className="input-label">WhatsApp Display Number</label>
+                                <label className="input-label">SaaS Subscription Plan</label>
+                                <select
+                                    className="select"
+                                    style={{ width: "100%" }}
+                                    value={formData.subscription_plan}
+                                    onChange={e => setFormData({ ...formData, subscription_plan: e.target.value })}
+                                >
+                                    <option value="STARTER">Starter Plan (₹1,999/mo — All Features Included)</option>
+                                    <option value="PRO_AI">Pro AI Plan (₹3,499/mo — Multi-Branch & Future AI)</option>
+                                    <option value="ANNUAL_PRO">Annual Plan (₹19,990/yr)</option>
+                                </select>
+                            </div>
+                            <div className="input-group">
+                                <label className="input-label">Restaurant Contact Phone Number</label>
                                 <input
                                     className="input"
-                                    required
-                                    value={formData.whatsapp_display_number}
-                                    onChange={e => setFormData({ ...formData, whatsapp_display_number: e.target.value })}
+                                    value={formData.contact_phone}
+                                    onChange={e => setFormData({ ...formData, contact_phone: e.target.value })}
                                     placeholder="e.g. +91 98765 43210"
                                 />
                             </div>
-                            <div className="input-group">
-                                <label className="input-label">Meta Access Token</label>
-                                <input
-                                    className="input"
-                                    type="password"
-                                    value={formData.whatsapp_access_token}
-                                    onChange={e => setFormData({ ...formData, whatsapp_access_token: e.target.value })}
-                                    placeholder="EAAB..."
-                                />
-                            </div>
-                            <div className="input-group">
-                                <label className="input-label">Webhook Verify Token</label>
-                                <input
-                                    className="input"
-                                    required
-                                    value={formData.whatsapp_verify_token}
-                                    onChange={e => setFormData({ ...formData, whatsapp_verify_token: e.target.value })}
-                                    placeholder="e.g. hellodine"
-                                />
-                            </div>
-                            <div className="input-group">
-                                <label className="input-label">Meta App ID</label>
-                                <input
-                                    className="input"
-                                    value={formData.whatsapp_app_id}
-                                    onChange={e => setFormData({ ...formData, whatsapp_app_id: e.target.value })}
-                                    placeholder="e.g. 123456789012345"
-                                />
-                            </div>
-                            <div className="input-group">
-                                <label className="input-label">Meta App Secret</label>
-                                <input
-                                    className="input"
-                                    type="password"
-                                    value={formData.whatsapp_app_secret}
-                                    onChange={e => setFormData({ ...formData, whatsapp_app_secret: e.target.value })}
-                                    placeholder="Required for signature verification"
-                                />
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                                <div className="input-group">
+                                    <label className="input-label">GSTIN (Optional)</label>
+                                    <input
+                                        className="input"
+                                        value={formData.gstin}
+                                        onChange={e => setFormData({ ...formData, gstin: e.target.value })}
+                                        placeholder="e.g. 21AABCS1429B1Z1"
+                                    />
+                                </div>
+                                <div className="input-group">
+                                    <label className="input-label">FSSAI License (Optional)</label>
+                                    <input
+                                        className="input"
+                                        value={formData.fssai_license_number}
+                                        onChange={e => setFormData({ ...formData, fssai_license_number: e.target.value })}
+                                        placeholder="14-digit FSSAI #"
+                                    />
+                                </div>
                             </div>
                             <div className="input-group">
                                 <label className="input-label">Max Allowed Branches</label>
@@ -302,9 +317,9 @@ export default function SystemAdmin() {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead>
                         <tr style={{ background: "rgba(255,255,255,0.03)", borderBottom: "1px solid var(--border)" }}>
-                            <th style={{ padding: "16px", textAlign: "left" }}>Restaurant</th>
-                            <th style={{ padding: "16px", textAlign: "left" }}>WhatsApp ID</th>
-                            <th style={{ padding: "16px", textAlign: "center" }}>Branch Limit</th>
+                            <th style={{ padding: "16px", textAlign: "left" }}>Restaurant & UPI</th>
+                            <th style={{ padding: "16px", textAlign: "left" }}>SaaS Plan & Expiry</th>
+                            <th style={{ padding: "16px", textAlign: "center" }}>Branches</th>
                             <th style={{ padding: "16px", textAlign: "center" }}>Status</th>
                             <th style={{ padding: "16px", textAlign: "center" }}>Actions</th>
                         </tr>
@@ -315,12 +330,34 @@ export default function SystemAdmin() {
                                 <td style={{ padding: "16px" }}>
                                     <div style={{ fontWeight: 700 }}>{r.name}</div>
                                     <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{r.whatsapp_display_number}</div>
-                                </td>
-                                <td style={{ padding: "16px", fontFamily: "monospace", fontSize: "0.8rem" }}>
-                                    <div>ID: {r.whatsapp_phone_number_id}</div>
-                                    <div style={{ color: "var(--accent)", marginTop: "4px" }}>
-                                        URL: {window.location.origin.replace("5173", "8000")}/api/webhook/{r.id}
+                                    <div style={{ fontSize: "0.76rem", color: "var(--green)", marginTop: "4px" }}>
+                                        🏦 UPI: {r.merchant_upi_id || "Default (.env)"}
                                     </div>
+                                </td>
+                                <td style={{ padding: "16px", fontSize: "0.82rem" }}>
+                                    <div style={{ fontWeight: 700, color: "var(--accent)" }}>
+                                        {r.subscription_plan || "STARTER"}
+                                    </div>
+                                    <div style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>
+                                        {r.subscription_expires_at
+                                            ? `Expires: ${new Date(r.subscription_expires_at).toLocaleDateString()}`
+                                            : "No expiry set"}
+                                    </div>
+                                    {r.pending_renewal_plan && (
+                                        <div style={{ marginTop: "6px", padding: "6px 10px", background: "rgba(255,159,67,0.15)", border: "1px solid var(--orange)", borderRadius: "8px" }}>
+                                            <div style={{ color: "var(--orange)", fontWeight: 700, fontSize: "0.75rem" }}>
+                                                🔔 Paid ₹{r.pending_renewal_amount} ({r.pending_renewal_plan})
+                                            </div>
+                                            <div style={{ fontSize: "0.72rem" }}>UTR: <strong>{r.pending_renewal_utr}</strong></div>
+                                            <button
+                                                className="btn btn-success btn-sm"
+                                                style={{ marginTop: "4px", padding: "3px 8px", fontSize: "0.72rem" }}
+                                                onClick={() => handleApproveRenewal(r, r.pending_renewal_plan === "ANNUAL_PRO" ? 365 : 30)}
+                                            >
+                                                ✅ Approve & Extend
+                                            </button>
+                                        </div>
+                                    )}
                                 </td>
                                 <td style={{ padding: "16px", textAlign: "center" }}>
                                     <span style={{
@@ -339,9 +376,16 @@ export default function SystemAdmin() {
                                     </span>
                                 </td>
                                 <td style={{ padding: "16px", textAlign: "center" }}>
-                                    <div style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
+                                    <div style={{ display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" }}>
                                         <button className="btn-secondary" style={{ padding: "6px 12px", fontSize: "0.8rem" }} onClick={() => openEdit(r)}>
                                             ✏️ Edit
+                                        </button>
+                                        <button
+                                            className="btn-secondary"
+                                            style={{ padding: "6px 10px", fontSize: "0.78rem", border: "1px solid var(--green)", color: "var(--green)" }}
+                                            onClick={() => handleApproveRenewal(r, 30)}
+                                        >
+                                            +30d Plan
                                         </button>
                                         <button className="btn-secondary" style={{ padding: "6px 12px", fontSize: "0.8rem", border: "1px solid var(--orange)", color: "var(--orange)" }} onClick={() => setResetTarget(r)}>
                                             🔑 Reset Pass

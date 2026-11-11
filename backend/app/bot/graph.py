@@ -8,6 +8,7 @@ from app.bot.nodes.cart_and_order import cart_executor, checkout_guard_node, kit
 from app.bot.nodes.billing import bill_generator
 from app.bot.nodes.chat import restaurant_chat
 from app.bot.nodes.menu_and_format import item_info_node
+from app.bot.nodes.entertainment import entertainment_node
 
 
 def route_after_intent(state: BotState) -> str:
@@ -21,27 +22,34 @@ def route_after_intent(state: BotState) -> str:
     if intent == "QR_SCAN":
         return "menu_retrieval"
     
-    # 2. Browsing
-    if intent == "BROWSE":
+    # 2. Browsing & AI Best Recommendations
+    if intent in ("BROWSE", "RECOMMEND_BEST"):
         return "menu_retrieval"
     if intent == "ITEM_INFO":
         return "item_info"
     
-    # 3. Cart / Order
-    if intent in ("ADD_ITEM", "REMOVE_ITEM", "UPDATE_QTY", "CART_VIEW"):
+    # 3. Cart / Order / AI Auto-Pick & Add / Order Status
+    if intent in ("ADD_ITEM", "AI_PICK_AND_ADD", "REMOVE_ITEM", "CLEAR_CART", "CANCEL_ORDER", "ORDER_STATUS", "UPDATE_QTY", "CART_VIEW"):
         return "cart_executor"
-    if intent in ("CONFIRM_SUMMARY", "CONFIRM"):  # CONFIRM is AI alias for CONFIRM_SUMMARY
-        return "checkout_guard"
-    if intent == "PLACE_ORDER":
+    if intent in ("PLACE_ORDER", "CONFIRM"):  # Typing/saying confirm directly dispatches order to kitchen
         return "kitchen_dispatch"
+
+    if intent == "CONFIRM_SUMMARY":
+        return "checkout_guard"
+
     
-    # 4. Bill / Chat
+    # 4. Entertainment & Birthday
+    if intent in ("ENTERTAIN_JOKE", "ENTERTAIN_CARTOON", "BIRTHDAY_WISH"):
+        return "entertainment"
+
+    # 5. Bill / Chat
     if intent == "BILL":
         return "bill_generator"
     if intent == "OTHER":
         return "restaurant_chat"
     
     return "response_formatter"
+
 
 
 def route_after_session(state: BotState) -> str:
@@ -71,6 +79,7 @@ def build_graph() -> StateGraph:
     g.add_node("checkout_guard", checkout_guard_node)
     g.add_node("kitchen_dispatch", kitchen_dispatch)
     g.add_node("bill_generator", bill_generator)
+    g.add_node("entertainment", entertainment_node)
     g.add_node("restaurant_chat", restaurant_chat)
     g.add_node("response_formatter", response_formatter)
 
@@ -91,6 +100,7 @@ def build_graph() -> StateGraph:
         "checkout_guard": "checkout_guard",
         "kitchen_dispatch": "kitchen_dispatch",
         "bill_generator": "bill_generator",
+        "entertainment": "entertainment",
         "restaurant_chat": "restaurant_chat",
         "response_formatter": "response_formatter",
     })
@@ -101,8 +111,9 @@ def build_graph() -> StateGraph:
         "response_formatter": "response_formatter"
     })
 
-    for node in ("menu_retrieval", "item_info", "checkout_guard", "kitchen_dispatch", "bill_generator", "restaurant_chat"):
+    for node in ("menu_retrieval", "item_info", "checkout_guard", "kitchen_dispatch", "bill_generator", "entertainment", "restaurant_chat"):
         g.add_edge(node, "response_formatter")
+
 
     g.add_edge("response_formatter", END)
 
