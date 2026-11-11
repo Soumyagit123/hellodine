@@ -344,7 +344,7 @@ export default function TableKiosk() {
         countdown: number;
     } | null>(null);
 
-    // Preload & select the most natural, human-like Indian English / Hindi Neural Voice available in the browser
+    // Preload & select the most natural, human-like Indian English Neural Voice available in the browser
     const bestIndianVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
 
     function pickBestIndianVoice(): SpeechSynthesisVoice | null {
@@ -352,51 +352,50 @@ export default function TableKiosk() {
         const voices = window.speechSynthesis.getVoices() || [];
         if (voices.length === 0) return null;
 
-        // Priority 1: Microsoft Edge / Windows 11 Online Natural Neural Indian Voices (sound like real Indian humans!)
-        const neuralPriorityNames = [
+        // Priority 1: High quality English (India) Natural / Neural voices
+        const enInPriorityNames = [
             "microsoft neerja online (natural)",
             "microsoft swara online (natural)",
             "microsoft prabhat online (natural)",
             "microsoft madhur online (natural)",
+            "google english (india)",
+            "google en-in",
+            "en-in-language",
+            "en_in",
             "neerja",
             "swara",
             "prabhat",
-            "google english (india)",
-            "google हिन्दी",
-            "google hindi",
             "veena",
             "rishi",
             "lekha",
-            "isha",
             "sangeeta",
-            "heera",
-            "ravi",
         ];
 
-        for (const target of neuralPriorityNames) {
-            const match = voices.find((v) => v.name.toLowerCase().includes(target));
+        for (const target of enInPriorityNames) {
+            const match = voices.find(
+                (v) =>
+                    v.name.toLowerCase().includes(target) &&
+                    (v.lang.toLowerCase().replace(/_/g, "-").startsWith("en") || !v.lang)
+            );
             if (match) return match;
         }
 
-        // Priority 2: Any "Natural" or "Online" voice with en-IN / hi-IN locale
-        const indianNatural = voices.find(
-            (v) =>
-                (v.lang.toLowerCase().includes("en-in") || v.lang.toLowerCase().includes("hi-in") || v.name.toLowerCase().includes("india")) &&
-                (v.name.toLowerCase().includes("natural") || v.name.toLowerCase().includes("online") || v.name.toLowerCase().includes("google"))
-        );
-        if (indianNatural) return indianNatural;
+        // Priority 2: Any voice strictly with locale "en-IN" or "en_IN"
+        const enInStrict = voices.find((v) => {
+            const l = (v.lang || "").toLowerCase().replace(/_/g, "-");
+            return l === "en-in" || l.startsWith("en-in");
+        });
+        if (enInStrict) return enInStrict;
 
-        // Priority 3: Any en-IN or hi-IN voice
-        const anyIndian = voices.find(
-            (v) => v.lang.toLowerCase().includes("en-in") || v.lang.toLowerCase().includes("hi-in") || v.name.toLowerCase().includes("india")
-        );
-        if (anyIndian) return anyIndian;
+        // Priority 3: Any other English voice (en-US, en-GB, etc.)
+        const anyEnglish = voices.find((v) => {
+            const l = (v.lang || "").toLowerCase().replace(/_/g, "-");
+            return l.startsWith("en-") || l === "en";
+        });
+        if (anyEnglish) return anyEnglish;
 
-        // Priority 4: Any Natural/Google English voice
-        const anyNaturalEn = voices.find(
-            (v) => v.lang.toLowerCase().startsWith("en") && (v.name.toLowerCase().includes("natural") || v.name.toLowerCase().includes("google"))
-        );
-        return anyNaturalEn || voices[0];
+        // Fallback: Default system voice (never pick regional non-English without checking)
+        return voices.find((v) => v.default) || voices[0];
     }
 
     useEffect(() => {

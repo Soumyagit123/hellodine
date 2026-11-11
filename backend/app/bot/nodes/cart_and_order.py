@@ -549,9 +549,11 @@ async def cart_executor(state: BotState) -> BotState:
                 *added_ci_buttons,
                 {"id": "view_cart", "title": "🛒 Review / Remove"},
             ]
+            clean_added_spoken = ", ".join([name.replace("*", "") for name in added_names])
             state["final_response"] = {
                 "type": "buttons",
                 "body": f"✅ Added: {', '.join(added_names)}\n\n🛒 Cart Total: *₹{cart.total:.2f}*\n\nReady to send to kitchen? Tap Confirm or Undo if added by mistake! 👇",
+                "voice_text": f"Added {clean_added_spoken} to your cart. Cart total is Rupees {cart.total:.0f}. Would you like to confirm the order?",
                 "buttons": action_buttons[:4],
             }
             return state
