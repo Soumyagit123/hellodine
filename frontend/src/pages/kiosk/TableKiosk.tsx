@@ -374,7 +374,7 @@ export default function TableKiosk() {
                 if (match) return match;
             }
         } else if (targetLang === "or") {
-            // Odia natural voice
+            // Check if tablet has an authentic Odia voice engine installed
             const odiaMatch = voices.find(
                 (v) =>
                     v.name.toLowerCase().includes("odia") ||
@@ -382,6 +382,14 @@ export default function TableKiosk() {
                     (v.lang || "").toLowerCase().replace(/_/g, "-").startsWith("or")
             );
             if (odiaMatch) return odiaMatch;
+            // If device lacks native Odia TTS, return Indian English / Hindi voice
+            // which cleanly speaks phonetic Odia words without muting
+            const indianFallback = voices.find(
+                (v) =>
+                    (v.lang || "").toLowerCase().includes("in") &&
+                    (v.name.toLowerCase().includes("google") || v.name.toLowerCase().includes("natural"))
+            );
+            if (indianFallback) return indianFallback;
         }
 
         // Default / English (India)

@@ -20,25 +20,26 @@ fallback_model: Any = _genai.GenerativeModel(
     generation_config={"temperature": 0.0, "max_output_tokens": 180},
 )
 
-# Compact, low-token prompt (~160 tokens) that understands speech-to-text typos & all Kiosk actions
-INTENT_PROMPT = """Restaurant AI Waiter NLU. Input may have voice speech-to-text typos (e.g. "car"="cart", "had"="add", "conform"="confirm").
+# Compact, low-token prompt (~160 tokens) that understands speech-to-text typos & all Kiosk actions in English, Hindi, and Odia
+INTENT_PROMPT = """Restaurant AI Waiter NLU. Input can be in English, Hindi, or Odia (native or Romanized).
+Understand speech-to-text variations (e.g. "car"="cart", "had"="add", "conform"="confirm", "kete hela"="bill", "gote"="1", "dita"="2", "aau"="more/and", "darkar"="want").
 Classify into ONE intent & extract JSON:
-- CART_VIEW: view/show/check cart, basket, bag, selected items ("show my car item", "what did I add")
-- ORDER_STATUS: check/track order status, kitchen progress, where is my food, how long ("is my order ready")
-- BROWSE: show menu, category, or search food ("show non veg thali", "paneer items", "something light")
-- RECOMMEND_BEST: ask for best/top/popular/special dishes or recommendations ("what is best in starter")
-- AI_PICK_AND_ADD: user is confused & asks AI to pick and add the best dish to cart ("add 1 best dish for me")
-- ADD_ITEM: add specific dish(es) to cart ("add 2 butter naan and 1 paneer tikka", "1 mango lassi")
-- UPDATE_QTY: change/set/reduce/increase quantity of an item in cart ("make butter naan 3", "reduce 1 roti")
-- REMOVE_ITEM: remove/delete specific dish from cart ("remove butter naan")
-- CLEAR_CART: empty/clear whole cart
-- CANCEL_ORDER: cancel placed kitchen order
-- PLACE_ORDER: confirm/place/send order to kitchen
-- BILL: ask for bill, gst invoice, total amount, or qr payment
-- ENTERTAIN_JOKE: ask for a joke/riddle
-- ENTERTAIN_CARTOON: play kids cartoon/video
+- CART_VIEW: view/show/check cart, basket ("show cart", "cart re kana achhi", "mera cart dikhao")
+- ORDER_STATUS: check/track order status, kitchen progress ("order kete samaya lagiba", "khana kab aayega", "is my order ready")
+- BROWSE: show menu, category, or search food ("menu dikhao", "menu dekhan", "paneer items", "something light")
+- RECOMMEND_BEST: ask for best/top/popular/special dishes ("best kana achhi", "sabse achha kya hai", "recommend food")
+- AI_PICK_AND_ADD: user is confused & asks AI to pick and add best dish ("nijara pasand add kara", "apne hisab se add karo")
+- ADD_ITEM: add specific dish(es) to cart ("add 2 butter naan", "gote paneer tikka dia", "ek biryani lana", "2 roti aau 1 dal fry")
+- UPDATE_QTY: change/set quantity in cart ("make naan 3", "roti 2 kara")
+- REMOVE_ITEM: remove/delete dish from cart ("naan hatao", "dal remove kara")
+- CLEAR_CART: empty/clear whole cart ("cart khali kara", "clear cart")
+- CANCEL_ORDER: cancel placed kitchen order ("order cancel kara")
+- PLACE_ORDER: confirm/place/send order to kitchen ("confirm kara", "order confirm karo", "kitchen ku pathao")
+- BILL: ask for bill, gst invoice, total amount, or qr payment ("bill kete hela", "bill aniba", "bill kitna hua", "pay kariba")
+- ENTERTAIN_JOKE: ask for a joke/riddle ("joke sunao", "kichi hasa katha kuha")
+- ENTERTAIN_CARTOON: play kids cartoon/video ("cartoon lagao", "pila mananku cartoon dekhao")
 - BIRTHDAY_WISH: celebrate someone's birthday (extract "birthday_name")
-- OTHER: general questions about restaurant, timings, spice customization, greetings
+- OTHER: general questions about restaurant, greetings, water, spice level
 
 Return ONLY valid JSON:
 {{"intent":"...","items":[{{"name":"...","quantity":1}}],"item_name":null,"is_veg":null,"limit":null,"quantity":1,"birthday_name":null}}

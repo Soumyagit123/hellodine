@@ -552,15 +552,19 @@ async def cart_executor(state: BotState) -> BotState:
             clean_added_spoken = ", ".join([name.replace("*", "") for name in added_names])
             lang = state.get("preferred_language", "en")
             if lang == "hi":
+                body_text = f"✅ जोड़ा गया: {', '.join(added_names)}\n\n🛒 कुल राशि: *₹{cart.total:.2f}*\n\nरसोई में भेजना है? कन्फर्म बटन दबाएं! 👇"
                 voice_prompt = f"आपके कार्ट में {clean_added_spoken} जोड़ दिया गया है। कुल राशि {cart.total:.0f} रुपये है। क्या आर्डर कन्फर्म करें?"
             elif lang == "or":
-                voice_prompt = f"ଆପଣଙ୍କ କାର୍ଟରେ {clean_added_spoken} ଯୋଡ଼ି ଦିଆଗଲା। ମୋଟ ମୂଲ୍ୟ {cart.total:.0f} ଟଙ୍କା। ଅର୍ଡର ନିଶ୍ଚିତ କରିବାକୁ ଚାହାନ୍ତି କି?"
+                body_text = f"✅ ଯୋଡ଼ାଗଲା: {', '.join(added_names)}\n\n🛒 ମୋଟ ମୂଲ୍ୟ: *₹{cart.total:.2f}*\n\nଅର୍ଡର ପଠାଇବା ପାଇଁ Confirm ବଟନ୍ ଦବାନ୍ତୁ! 👇"
+                # Phonetic transliteration so speech engine pronounces Odia fluently without skipping words
+                voice_prompt = f"Apananka cart re {clean_added_spoken} jodidia gala. Total Rupees {cart.total:.0f}. Order confirm kariba ki?"
             else:
+                body_text = f"✅ Added: {', '.join(added_names)}\n\n🛒 Cart Total: *₹{cart.total:.2f}*\n\nReady to send to kitchen? Tap Confirm or Undo if added by mistake! 👇"
                 voice_prompt = f"Added {clean_added_spoken} to your cart. Cart total is Rupees {cart.total:.0f}. Would you like to confirm the order?"
 
             state["final_response"] = {
                 "type": "buttons",
-                "body": f"✅ Added: {', '.join(added_names)}\n\n🛒 Cart Total: *₹{cart.total:.2f}*\n\nReady to send to kitchen? Tap Confirm or Undo if added by mistake! 👇",
+                "body": body_text,
                 "voice_text": voice_prompt,
                 "buttons": action_buttons[:4],
             }
