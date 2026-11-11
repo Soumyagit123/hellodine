@@ -550,10 +550,18 @@ async def cart_executor(state: BotState) -> BotState:
                 {"id": "view_cart", "title": "🛒 Review / Remove"},
             ]
             clean_added_spoken = ", ".join([name.replace("*", "") for name in added_names])
+            lang = state.get("preferred_language", "en")
+            if lang == "hi":
+                voice_prompt = f"आपके कार्ट में {clean_added_spoken} जोड़ दिया गया है। कुल राशि {cart.total:.0f} रुपये है। क्या आर्डर कन्फर्म करें?"
+            elif lang == "or":
+                voice_prompt = f"ଆପଣଙ୍କ କାର୍ଟରେ {clean_added_spoken} ଯୋଡ଼ି ଦିଆଗଲା। ମୋଟ ମୂଲ୍ୟ {cart.total:.0f} ଟଙ୍କା। ଅର୍ଡର ନିଶ୍ଚିତ କରିବାକୁ ଚାହାନ୍ତି କି?"
+            else:
+                voice_prompt = f"Added {clean_added_spoken} to your cart. Cart total is Rupees {cart.total:.0f}. Would you like to confirm the order?"
+
             state["final_response"] = {
                 "type": "buttons",
                 "body": f"✅ Added: {', '.join(added_names)}\n\n🛒 Cart Total: *₹{cart.total:.2f}*\n\nReady to send to kitchen? Tap Confirm or Undo if added by mistake! 👇",
-                "voice_text": f"Added {clean_added_spoken} to your cart. Cart total is Rupees {cart.total:.0f}. Would you like to confirm the order?",
+                "voice_text": voice_prompt,
                 "buttons": action_buttons[:4],
             }
             return state

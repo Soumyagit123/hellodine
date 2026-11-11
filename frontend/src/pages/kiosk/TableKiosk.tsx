@@ -344,15 +344,47 @@ export default function TableKiosk() {
         countdown: number;
     } | null>(null);
 
-    // Preload & select the most natural, human-like Indian English Neural Voice available in the browser
-    const bestIndianVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+    // Kiosk Language Mode: "auto" (detect based on customer speech) | "en" | "hi" | "or"
+    const [kioskLanguage, setKioskLanguage] = useState<"auto" | "en" | "hi" | "or">("auto");
 
-    function pickBestIndianVoice(): SpeechSynthesisVoice | null {
+    // Dynamic Voice Picker: Finds the most authentic natural human voice for the target language (English, Hindi, Odia)
+    function pickVoiceForLanguage(targetLang: "en" | "hi" | "or"): SpeechSynthesisVoice | null {
         if (typeof window === "undefined" || !("speechSynthesis" in window)) return null;
         const voices = window.speechSynthesis.getVoices() || [];
         if (voices.length === 0) return null;
 
-        // Priority 1: High quality English (India) Natural / Neural voices
+        if (targetLang === "hi") {
+            // Hindi natural / neural voices
+            const hindiVoices = [
+                "microsoft swara online (natural)",
+                "microsoft madhur online (natural)",
+                "google हिन्दी",
+                "google hindi",
+                "swara",
+                "madhur",
+                "hi-in",
+                "hi_in",
+            ];
+            for (const target of hindiVoices) {
+                const match = voices.find(
+                    (v) =>
+                        v.name.toLowerCase().includes(target) ||
+                        (v.lang || "").toLowerCase().replace(/_/g, "-").startsWith("hi")
+                );
+                if (match) return match;
+            }
+        } else if (targetLang === "or") {
+            // Odia natural voice
+            const odiaMatch = voices.find(
+                (v) =>
+                    v.name.toLowerCase().includes("odia") ||
+                    v.name.toLowerCase().includes("oriya") ||
+                    (v.lang || "").toLowerCase().replace(/_/g, "-").startsWith("or")
+            );
+            if (odiaMatch) return odiaMatch;
+        }
+
+        // Default / English (India)
         const enInPriorityNames = [
             "microsoft neerja online (natural)",
             "microsoft swara online (natural)",
@@ -380,40 +412,21 @@ export default function TableKiosk() {
             if (match) return match;
         }
 
-        // Priority 2: Any voice strictly with locale "en-IN" or "en_IN"
         const enInStrict = voices.find((v) => {
             const l = (v.lang || "").toLowerCase().replace(/_/g, "-");
             return l === "en-in" || l.startsWith("en-in");
         });
         if (enInStrict) return enInStrict;
 
-        // Priority 3: Any other English voice (en-US, en-GB, etc.)
         const anyEnglish = voices.find((v) => {
             const l = (v.lang || "").toLowerCase().replace(/_/g, "-");
             return l.startsWith("en-") || l === "en";
         });
-        if (anyEnglish) return anyEnglish;
-
-        // Fallback: Default system voice (never pick regional non-English without checking)
-        return voices.find((v) => v.default) || voices[0];
+        return anyEnglish || voices.find((v) => v.default) || voices[0];
     }
 
-    useEffect(() => {
-        if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-        const updateVoice = () => {
-            bestIndianVoiceRef.current = pickBestIndianVoice();
-        };
-        updateVoice();
-        window.speechSynthesis.onvoiceschanged = updateVoice;
-        return () => {
-            if ("speechSynthesis" in window) {
-                window.speechSynthesis.onvoiceschanged = null;
-            }
-        };
-    }, []);
-
-    // Speak text using Browser SpeechSynthesis ONLY when explicitly requested, with warm Indian human prosody
-    function speakText(rawText: string) {
+    // Speak text using Browser SpeechSynthesis with language-specific pronunciation and natural cadence
+    function speakText(rawText: string, targetLanguage?: "en" | "hi" | "or") {
         if (!voiceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) return;
         try {
             window.speechSynthesis.cancel();
@@ -426,15 +439,26 @@ export default function TableKiosk() {
                 .replace(/\s+/g, " ")
                 .trim();
             if (!clean) return;
+
+            // Auto-detect language if not explicitly given
+            let detectedLang: "en" | "hi" | "or" = targetLanguage || "en";
+            if (!targetLanguage) {
+                const odiaChars = (clean.match(/[\u0B00-\u0B7F]/g) || []).length;
+                const hindiChars = (clean.match(/[\u0900-\u097F]/g) || []).length;
+                if (odiaChars >= 2) detectedLang = "or";
+                else if (hindiChars >= 2) detectedLang = "hi";
+                else detectedLang = "en";
+            }
+
             const utterance = new SpeechSynthesisUtterance(clean);
-            const chosenVoice = bestIndianVoiceRef.current || pickBestIndianVoice();
+            const chosenVoice = pickVoiceForLanguage(detectedLang);
             if (chosenVoice) {
                 utterance.voice = chosenVoice;
-                utterance.lang = chosenVoice.lang || "en-IN";
+                utterance.lang = chosenVoice.lang || (detectedLang === "hi" ? "hi-IN" : detectedLang === "or" ? "or-IN" : "en-IN");
             } else {
-                utterance.lang = "en-IN";
+                utterance.lang = detectedLang === "hi" ? "hi-IN" : detectedLang === "or" ? "or-IN" : "en-IN";
             }
-            // Warm, natural conversational Indian cadence
+            // Warm, natural conversational cadence
             utterance.rate = 0.98;
             utterance.pitch = 1.0;
             // Android mobile voice engine bugfix: resume if paused before speaking
@@ -451,7 +475,8 @@ export default function TableKiosk() {
         body: string,
         buttons?: { id: string; title: string }[],
         shouldSpeak = false,
-        customVoiceText?: string
+        customVoiceText?: string,
+        replyLanguage?: "en" | "hi" | "or"
     ) {
         const msg: ChatMessage = {
             id: `bot-${Date.now()}-${Math.random()}`,
@@ -462,7 +487,7 @@ export default function TableKiosk() {
         };
         setMessages((prev) => [...prev, msg]);
         if (shouldSpeak) {
-            speakText(customVoiceText || body);
+            speakText(customVoiceText || body, replyLanguage);
         }
     }
 
@@ -978,15 +1003,22 @@ export default function TableKiosk() {
 
             const reply = res.data.reply;
             const uiAction = res.data.ui_action;
+            const resLang = (res.data.language || "en") as "en" | "hi" | "or";
 
             // Requirement 9: If showing bill/invoice, do NOT read all line items aloud — only speak short prompt
             let voiceOverride: string | undefined = reply?.voice_text;
             if (uiAction?.action === "SHOW_BILL") {
-                voiceOverride = "Please review your invoice details on the screen and scan the QR code for payment.";
+                if (resLang === "hi") {
+                    voiceOverride = "कृपया स्क्रीन पर अपना बिल देखें और भुगतान के लिए क्यूआर कोड स्कैन करें।";
+                } else if (resLang === "or") {
+                    voiceOverride = "ଦୟାକରି ସ୍କ୍ରିନରେ ଆପଣଙ୍କ ବିଲ୍ ଦେଖନ୍ତୁ ଏବଂ ପେମେଣ୍ଟ ପାଇଁ QR କୋଡ୍ ସ୍କାନ୍ କରନ୍ତୁ।";
+                } else {
+                    voiceOverride = "Please review your invoice details on the screen and scan the QR code for payment.";
+                }
             }
 
             if (reply?.body) {
-                appendBotMessage(reply.body, reply.buttons, shouldSpeakReply, voiceOverride);
+                appendBotMessage(reply.body, reply.buttons, shouldSpeakReply, voiceOverride, resLang);
             }
 
             if (uiAction?.action === "SHOW_CARTOONS") {
@@ -1071,7 +1103,15 @@ export default function TableKiosk() {
         voiceDispatchedForSessionRef.current = false;
 
         const recognition = new SpeechRecognition();
-        recognition.lang = "en-IN";
+        // Set speech recognition language based on selected language
+        if (kioskLanguage === "hi") {
+            recognition.lang = "hi-IN";
+        } else if (kioskLanguage === "or") {
+            recognition.lang = "or-IN";
+        } else {
+            // "en" or "auto": en-IN recognizer handles English, Hinglish, and Indian dish phonetics cleanly
+            recognition.lang = "en-IN";
+        }
         // On Android / mobile, continuous=true causes multiple competing isFinal events.
         // We set continuous = false for mobile/touch devices for rock-solid stability.
         const isMobileDevice =
@@ -2692,15 +2732,39 @@ export default function TableKiosk() {
                         </div>
                     </div>
 
-                    <button
-                        className={`btn btn-sm ${voiceEnabled ? "btn-primary" : "btn-outline"}`}
-                        onClick={() => {
-                            if (voiceEnabled && "speechSynthesis" in window) window.speechSynthesis.cancel();
-                            setVoiceEnabled(!voiceEnabled);
-                        }}
-                    >
-                        {voiceEnabled ? "🔊 AI Voice On" : "🔇 Muted"}
-                    </button>
+                    <div className="flex items-center gap-2">
+                        {/* Language Selector: Auto / English / Hindi / Odia */}
+                        <select
+                            className="input"
+                            style={{
+                                padding: "4px 8px",
+                                fontSize: "0.74rem",
+                                borderRadius: 14,
+                                background: "#1c2035",
+                                borderColor: "var(--border)",
+                                color: "#fff",
+                                cursor: "pointer",
+                            }}
+                            value={kioskLanguage}
+                            onChange={(e) => setKioskLanguage(e.target.value as any)}
+                            title="Select Language for AI Waiter"
+                        >
+                            <option value="auto">🌐 Auto</option>
+                            <option value="en">🇬🇧 English</option>
+                            <option value="hi">🇮🇳 हिन्दी</option>
+                            <option value="or">🇮🇳 ଓଡ଼ିଆ</option>
+                        </select>
+
+                        <button
+                            className={`btn btn-sm ${voiceEnabled ? "btn-primary" : "btn-outline"}`}
+                            onClick={() => {
+                                if (voiceEnabled && "speechSynthesis" in window) window.speechSynthesis.cancel();
+                                setVoiceEnabled(!voiceEnabled);
+                            }}
+                        >
+                            {voiceEnabled ? "🔊 Voice" : "🔇 Muted"}
+                        </button>
+                    </div>
                 </div>
 
                 {/* CHAT MESSAGES STREAM */}

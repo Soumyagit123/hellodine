@@ -76,10 +76,29 @@ def _normalize_stt_typos(text: str) -> str:
 
 
 async def detect_language(state: BotState) -> BotState:
-    """Lightweight: detect Hindi vs English from Unicode range."""
+    """Detect language: Odia (or), Hindi (hi), or English (en). Handles native script and phonetic keywords."""
     text = state.get("message_text", "")
+    odia_chars = sum(1 for c in text if "\u0B00" <= c <= "\u0B7F")
     hindi_chars = sum(1 for c in text if "\u0900" <= c <= "\u097F")
-    state["preferred_language"] = "hi" if hindi_chars > 2 else state.get("preferred_language", "en")
+
+    if odia_chars >= 2:
+        state["preferred_language"] = "or"
+        return state
+    if hindi_chars >= 2:
+        state["preferred_language"] = "hi"
+        return state
+
+    # Check for Romanized Hindi / Odia colloquial phrases
+    lower = f" {text.lower().strip()} "
+    odia_keywords = [" kete ", " kana ", " darkar ", " gochia ", " dita ", " biriayani ", " aau ", " kie "]
+    hindi_keywords = [" kya ", " kitna ", " chahiye ", " ek ", " do ", " teen ", " char ", " paanch ", " lao ", " dedo ", " batao ", " khana ", " thali "]
+
+    if any(k in lower for k in odia_keywords):
+        state["preferred_language"] = "or"
+    elif any(k in lower for k in hindi_keywords):
+        state["preferred_language"] = "hi"
+    else:
+        state["preferred_language"] = state.get("preferred_language", "en")
     return state
 
 

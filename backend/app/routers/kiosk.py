@@ -570,6 +570,7 @@ async def kiosk_chat(data: ChatMessageRequest, db: AsyncSession = Depends(get_db
 
     return {
         "intent": result.get("intent"),
+        "language": result.get("preferred_language", "en"),
         "reply": final_response,
         "ui_action": ui_action,
         "state": state_snapshot,

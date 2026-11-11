@@ -11,7 +11,7 @@ class BotState(TypedDict, total=False):
     customer_id: str
     wa_user_id: str       # customer's WhatsApp phone number or kiosk device id
     wa_message_id: str    # incoming message ID (for dedup)
-    preferred_language: str  # "en" | "hi"
+    preferred_language: str  # "en" | "hi" | "or"
 
     # Message context
     raw_message: dict     # full parsed WA payload
