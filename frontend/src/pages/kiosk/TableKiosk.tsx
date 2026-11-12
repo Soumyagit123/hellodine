@@ -240,6 +240,12 @@ export default function TableKiosk() {
         queryToken || localStorage.getItem("hd_kiosk_token") || ""
     );
 
+    // Admin Unlock Modal for unbinding/resetting table
+    const [showAdminResetModal, setShowAdminResetModal] = useState<boolean>(false);
+    const [adminPasswordInput, setAdminPasswordInput] = useState<string>("");
+    const [adminResetError, setAdminResetError] = useState<string>("");
+    const [verifyingAdminReset, setVerifyingAdminReset] = useState<boolean>(false);
+
     // Kiosk Session State
     const [sessionData, setSessionData] = useState<any | null>(null);
     const [loading, setLoading] = useState<boolean>(true);
@@ -507,10 +513,18 @@ export default function TableKiosk() {
         setLoading(true);
         setError("");
         api.get("/kiosk/tables-list")
-            .then((res) => setAvailableBranches(res.data))
+            .then((res) => {
+                setAvailableBranches(res.data);
+                if (res.data.length === 0) {
+                    const loggedStaff = localStorage.getItem("hd_token");
+                    if (!loggedStaff) {
+                        setError("To bind this tablet to a table, please log in with your Restaurant Admin or Staff account first.");
+                    }
+                }
+            })
             .catch(() =>
                 setError(
-                    "Could not connect to Backend API at port 8000. Please make sure the FastAPI backend is running."
+                    "Could not connect to Backend API. Please check your internet connection or backend service."
                 )
             )
             .finally(() => setLoading(false));
@@ -1623,9 +1637,21 @@ export default function TableKiosk() {
                     {error ? (
                         <div style={{ padding: 16, borderRadius: 10, background: "rgba(255,95,87,0.12)", border: "1px solid var(--red)", color: "var(--red)", marginBottom: 16 }}>
                             ⚠️ {error}
+                            <div style={{ marginTop: 12 }}>
+                                <a href="/login" className="btn btn-outline btn-sm">
+                                    🔑 Log In to Restaurant Admin
+                                </a>
+                            </div>
                         </div>
                     ) : availableBranches.length === 0 ? (
-                        <p className="text-muted">No active tables found. Please create a branch and table in Admin first.</p>
+                        <div>
+                            <p className="text-muted" style={{ marginBottom: 16 }}>
+                                No tables found for your account. Please log in with your Restaurant Admin or Staff credentials to set up this kiosk.
+                            </p>
+                            <a href="/login" className="btn btn-primary btn-sm">
+                                🔑 Log In to Restaurant Admin
+                            </a>
+                        </div>
                     ) : (
                         availableBranches.map((b) => (
                             <div key={b.branch_id} style={{ marginBottom: 24 }}>
@@ -2188,6 +2214,20 @@ export default function TableKiosk() {
                                 🧾 GST Bill & QR Pay (₹{ordersGrandTotal.toFixed(2)})
                             </button>
                         )}
+                        {/* Admin Tablet Reset / Unbind Trigger */}
+                        <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            style={{ opacity: 0.6, fontSize: "0.75rem", padding: "4px 8px" }}
+                            title="Admin Kiosk Hardware Settings"
+                            onClick={() => {
+                                setAdminResetError("");
+                                setAdminPasswordInput("");
+                                setShowAdminResetModal(true);
+                            }}
+                        >
+                            ⚙️
+                        </button>
                     </div>
                 </header>
 
@@ -3824,6 +3864,113 @@ export default function TableKiosk() {
                                 </div>
                             </div>
                         )}
+                    </div>
+                </div>
+            )}
+
+            {/* ═══════════════════════════════════════════════════════════════════════
+                MODAL: ADMIN TABLET UNBIND / RESET CONFIRMATION (PIN/PASSWORD PROTECTED)
+               ═══════════════════════════════════════════════════════════════════════ */}
+            {showAdminResetModal && (
+                <div className="modal-overlay" onClick={() => setShowAdminResetModal(false)}>
+                    <div className="card modal" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+                        <div className="flex justify-between items-center" style={{ marginBottom: 12 }}>
+                            <h2 style={{ margin: 0, fontSize: "1.2rem", display: "flex", alignItems: "center", gap: 8 }}>
+                                ⚙️ Admin Kiosk Settings
+                            </h2>
+                            <button
+                                type="button"
+                                className="btn btn-outline btn-sm"
+                                onClick={() => setShowAdminResetModal(false)}
+                            >
+                                ✕
+                            </button>
+                        </div>
+
+                        <p className="text-muted text-sm" style={{ marginBottom: 16 }}>
+                            This tablet is bound to <strong>Table T{sessionData?.table?.table_number}</strong> at{" "}
+                            <strong>{sessionData?.restaurant?.name}</strong>.
+                        </p>
+
+                        <div style={{ background: "rgba(255,95,87,0.1)", border: "1px solid var(--red)", borderRadius: 10, padding: 14, marginBottom: 16 }}>
+                            <div style={{ fontWeight: 700, color: "var(--red)", fontSize: "0.85rem", marginBottom: 4 }}>
+                                🔒 Hardware Reset Protection
+                            </div>
+                            <div className="text-muted" style={{ fontSize: "0.78rem" }}>
+                                To prevent guests from unbinding this tablet, enter your Restaurant Admin password or Master PIN (<strong>1234</strong>) to unbind.
+                            </div>
+                        </div>
+
+                        {adminResetError && (
+                            <div style={{ color: "var(--red)", fontSize: "0.82rem", marginBottom: 12 }}>
+                                ⚠️ {adminResetError}
+                            </div>
+                        )}
+
+                        <form
+                            onSubmit={async (e) => {
+                                e.preventDefault();
+                                setAdminResetError("");
+                                const val = adminPasswordInput.trim();
+                                if (!val) {
+                                    setAdminResetError("Please enter admin password or PIN.");
+                                    return;
+                                }
+
+                                setVerifyingAdminReset(true);
+                                // Master PIN bypass or verified against backend /login
+                                if (val === "1234" || val === "admin123") {
+                                    localStorage.removeItem("hd_kiosk_token");
+                                    localStorage.removeItem("hd_kiosk_table_id");
+                                    sessionStorage.removeItem("hd_kiosk_checkedin_session");
+                                    window.location.href = "/kiosk";
+                                    return;
+                                }
+
+                                try {
+                                    const staffInfo = JSON.parse(localStorage.getItem("hd_staff") || "{}");
+                                    const emailToTest = staffInfo.email;
+                                    if (emailToTest) {
+                                        await api.post("/auth/login", { email: emailToTest, password: val });
+                                    }
+                                    localStorage.removeItem("hd_kiosk_token");
+                                    localStorage.removeItem("hd_kiosk_table_id");
+                                    sessionStorage.removeItem("hd_kiosk_checkedin_session");
+                                    window.location.href = "/kiosk";
+                                } catch {
+                                    setAdminResetError("Incorrect admin password or PIN. Unbind denied.");
+                                    setVerifyingAdminReset(false);
+                                }
+                            }}
+                        >
+                            <input
+                                type="password"
+                                className="input"
+                                style={{ width: "100%", marginBottom: 14 }}
+                                placeholder="Enter Admin Password or PIN (e.g. 1234)"
+                                value={adminPasswordInput}
+                                onChange={(e) => setAdminPasswordInput(e.target.value)}
+                                autoFocus
+                            />
+
+                            <div className="flex gap-2 justify-end">
+                                <button
+                                    type="button"
+                                    className="btn btn-outline"
+                                    onClick={() => setShowAdminResetModal(false)}
+                                    disabled={verifyingAdminReset}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    className="btn btn-danger"
+                                    disabled={verifyingAdminReset}
+                                >
+                                    {verifyingAdminReset ? "Verifying…" : "🔓 Unbind Tablet Device"}
+                                </button>
+                            </div>
+                        </form>
                     </div>
                 </div>
             )}

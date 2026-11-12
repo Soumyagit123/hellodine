@@ -19,6 +19,8 @@ from app.models.billing import Bill, Payment, BillStatus, PaymentMethod
 from app.bot.graph import compiled_graph
 from app.services.ws_manager import manager
 from app.services.cache_service import cache
+from app.services.auth_service import get_optional_staff
+from app.models.auth import StaffUser, StaffRole
 from app.config import settings
 
 
@@ -257,16 +259,48 @@ async def _serialize_session_state(session: TableSession, db: AsyncSession, incl
 
 
 @router.get("/tables-list")
-async def list_public_tables(db: AsyncSession = Depends(get_db)):
-    """Return available branches and tables so a tablet can bind to a table easily."""
-    rest_res = await db.execute(select(Restaurant).where(Restaurant.is_active == True).order_by(Restaurant.created_at.desc()))
+async def list_available_tables_for_binding(
+    db: AsyncSession = Depends(get_db),
+    current_staff: Optional[StaffUser] = Depends(get_optional_staff),
+):
+    """
+    Return available branches and tables to bind a tablet device.
+    Strict Multi-Tenant Scoping:
+    - SYSTEM_ADMIN: Can view and bind tables across all restaurants.
+    - RESTAURANT ADMIN (SUPER_ADMIN, BRANCH_ADMIN, CASHIER): Can ONLY view tables of their own restaurant/branch.
+    - Unauthenticated: Returns empty list to prevent cross-tenant data leaks.
+    """
+    if not current_staff:
+        # Require authentication to browse and bind tables to prevent public exposure
+        return []
+
+    is_system_admin = current_staff.role == StaffRole.SYSTEM_ADMIN or current_staff.role.value == "SYSTEM_ADMIN"
+
+    # Filter restaurants
+    if is_system_admin:
+        rest_query = select(Restaurant).where(Restaurant.is_active == True).order_by(Restaurant.created_at.desc())
+    else:
+        rest_query = select(Restaurant).where(Restaurant.id == current_staff.restaurant_id, Restaurant.is_active == True)
+
+    rest_res = await db.execute(rest_query)
     restaurants = rest_res.scalars().all()
     out = []
+
     for r in restaurants:
-        br_res = await db.execute(select(Branch).where(Branch.restaurant_id == r.id))
+        # Filter branches
+        if is_system_admin or not current_staff.branch_id or current_staff.role.value == "SUPER_ADMIN":
+            br_query = select(Branch).where(Branch.restaurant_id == r.id)
+        else:
+            br_query = select(Branch).where(Branch.id == current_staff.branch_id, Branch.restaurant_id == r.id)
+
+        br_res = await db.execute(br_query)
         branches = br_res.scalars().all()
         for b in branches:
-            t_res = await db.execute(select(Table).where(Table.branch_id == b.id, Table.is_active == True).order_by(Table.table_number))
+            t_res = await db.execute(
+                select(Table)
+                .where(Table.branch_id == b.id, Table.is_active == True)
+                .order_by(Table.table_number)
+            )
             tables = t_res.scalars().all()
             out.append({
                 "restaurant_id": str(r.id),
