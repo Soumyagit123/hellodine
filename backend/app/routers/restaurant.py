@@ -343,6 +343,49 @@ async def list_branches(restaurant_id: uuid.UUID, db: AsyncSession = Depends(get
     return branches
 
 
+@router.patch("/branches/{branch_id}")
+async def update_branch(branch_id: uuid.UUID, data: dict, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
+    result = await db.execute(select(Branch).where(Branch.id == branch_id))
+    b = result.scalar_one_or_none()
+    if not b:
+        raise HTTPException(404, "Branch not found")
+
+    if current_staff.role == StaffRole.SUPER_ADMIN and str(b.restaurant_id) != str(current_staff.restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to this branch")
+    elif current_staff.role == StaffRole.BRANCH_ADMIN and str(b.id) != str(current_staff.branch_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to update another branch")
+    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
+
+    for field in ["name", "address", "city", "state", "pincode", "gstin"]:
+        if field in data and data[field] is not None:
+            setattr(b, field, str(data[field]).strip())
+
+    await db.commit()
+    await db.refresh(b)
+    cache.invalidate_prefix(f"branches:{b.restaurant_id}")
+    return b
+
+
+@router.delete("/branches/{branch_id}")
+async def delete_branch(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
+    if current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only restaurant owners or system admins can delete branches")
+
+    result = await db.execute(select(Branch).where(Branch.id == branch_id))
+    b = result.scalar_one_or_none()
+    if not b:
+        raise HTTPException(404, "Branch not found")
+
+    if current_staff.role == StaffRole.SUPER_ADMIN and str(b.restaurant_id) != str(current_staff.restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to delete another restaurant's branch")
+
+    await db.delete(b)
+    await db.commit()
+    cache.invalidate_prefix(f"branches:{b.restaurant_id}")
+    return {"ok": True}
+
+
 # ─── Tables ──────────────────────────────────────────────────────────────────
 @router.post("/tables")
 async def create_table(data: TableCreate, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
@@ -375,6 +418,43 @@ async def list_tables(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db), 
     tables = result.scalars().all()
     cache.set(cache_key, tables, ttl_seconds=120)
     return tables
+
+
+@router.patch("/tables/{table_id}")
+async def update_table(table_id: uuid.UUID, data: dict, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
+    result = await db.execute(select(Table).where(Table.id == table_id))
+    t = result.scalar_one_or_none()
+    if not t:
+        raise HTTPException(404, "Table not found")
+    if current_staff.role == StaffRole.BRANCH_ADMIN and str(t.branch_id) != str(current_staff.branch_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to this table")
+    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
+
+    if "table_number" in data:
+        t.table_number = int(data["table_number"])
+    if "is_active" in data:
+        t.is_active = bool(data["is_active"])
+    await db.commit()
+    cache.invalidate_prefix(f"tables:{t.branch_id}")
+    return t
+
+
+@router.delete("/tables/{table_id}")
+async def delete_table(table_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
+    result = await db.execute(select(Table).where(Table.id == table_id))
+    t = result.scalar_one_or_none()
+    if not t:
+        raise HTTPException(404, "Table not found")
+    if current_staff.role == StaffRole.BRANCH_ADMIN and str(t.branch_id) != str(current_staff.branch_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to this table")
+    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
+
+    t.is_active = False
+    await db.commit()
+    cache.invalidate_prefix(f"tables:{t.branch_id}")
+    return {"ok": True}
 
 
 @router.post("/tables/{table_id}/qr")
@@ -471,6 +551,55 @@ async def list_staff(restaurant_id: uuid.UUID, branch_id: uuid.UUID | None = Non
         staff_list.append(staff)
         
     return staff_list
+
+
+@router.patch("/staff/{staff_id}")
+async def update_staff(staff_id: uuid.UUID, data: dict, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
+    result = await db.execute(select(StaffUser).where(StaffUser.id == staff_id))
+    s = result.scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "Staff not found")
+
+    if current_staff.role == StaffRole.BRANCH_ADMIN and str(s.branch_id) != str(current_staff.branch_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to staff outside your branch")
+    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
+
+    if "name" in data and data["name"]:
+        s.name = data["name"].strip()
+    if "phone" in data and data["phone"]:
+        s.phone = data["phone"].strip()
+    if "role" in data and data["role"]:
+        s.role = data["role"]
+    if "branch_id" in data:
+        s.branch_id = uuid.UUID(data["branch_id"]) if data["branch_id"] else None
+    if "is_active" in data:
+        s.is_active = bool(data["is_active"])
+    if "password" in data and data["password"]:
+        from app.services.auth_service import hash_password
+        s.password_hash = hash_password(data["password"])
+
+    await db.commit()
+    await db.refresh(s)
+    return {"ok": True, "id": str(s.id), "name": s.name}
+
+
+@router.delete("/staff/{staff_id}")
+async def delete_staff(staff_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
+    result = await db.execute(select(StaffUser).where(StaffUser.id == staff_id))
+    s = result.scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "Staff not found")
+
+    if current_staff.role == StaffRole.BRANCH_ADMIN and str(s.branch_id) != str(current_staff.branch_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to staff outside your branch")
+    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
+
+    # Soft delete
+    s.is_active = False
+    await db.commit()
+    return {"ok": True}
 
 
 @router.patch("/staff/{staff_id}/deactivate")

@@ -29,6 +29,7 @@ export default function BranchAdmin() {
 
     const [loading, setLoading] = useState(true);
     const [showAdd, setShowAdd] = useState(false);
+    const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
     const [formData, setFormData] = useState({
         name: "",
         address: "",
@@ -133,10 +134,34 @@ export default function BranchAdmin() {
         }
     };
 
+    const handleUpdate = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!editingBranch) return;
+        try {
+            await client.patch(`/admin/branches/${editingBranch.id}`, formData);
+            setEditingBranch(null);
+            fetchBranches();
+            alert("✅ Branch details updated successfully!");
+        } catch (err: any) {
+            alert(err.response?.data?.detail || "Failed to update branch");
+        }
+    };
+
+    const handleDeleteBranch = async (branch: Branch) => {
+        if (!window.confirm(`Are you sure you want to delete branch "${branch.name}"? This action cannot be undone.`)) return;
+        try {
+            await client.delete(`/admin/branches/${branch.id}`);
+            fetchBranches();
+            alert(`✅ Branch "${branch.name}" deleted.`);
+        } catch (err: any) {
+            alert(err.response?.data?.detail || "Failed to delete branch");
+        }
+    };
+
     const selectBranch = (branch: Branch) => {
         localStorage.setItem("hd_selected_branch", branch.id);
         localStorage.setItem("hd_selected_branch_name", branch.name);
-        alert(`Now managing: ${branch.name}`);
+        window.location.href = "/admin/tables";
     };
 
     if (loading) return <div className="p-8">Loading Branch Manager...</div>;
@@ -246,19 +271,116 @@ export default function BranchAdmin() {
                                 🧾 GSTIN: {b.gstin}
                             </div>
                         )}
-                        <div style={{ borderTop: "1px solid var(--border)", paddingTop: "16px", display: "flex", gap: "12px" }}>
+                        <div style={{ borderTop: "1px solid var(--border)", paddingTop: "16px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
                             <button
                                 className="btn-primary"
-                                style={{ padding: "8px 16px", fontSize: "0.8rem", flex: 1 }}
+                                style={{ padding: "8px 14px", fontSize: "0.8rem", flex: 1 }}
                                 onClick={() => selectBranch(b)}
+                                title="Set active branch and open Tables Management"
                             >
                                 ⚡ Manage This Branch
                             </button>
-                            <button className="btn-secondary" style={{ padding: "8px 16px", fontSize: "0.8rem" }}>⚙️ Settings</button>
+                            <button
+                                className="btn-secondary"
+                                style={{ padding: "8px 14px", fontSize: "0.8rem" }}
+                                title="Edit Branch Information"
+                                onClick={() => {
+                                    setEditingBranch(b);
+                                    setFormData({
+                                        name: b.name,
+                                        address: b.address,
+                                        city: b.city,
+                                        state: b.state,
+                                        pincode: b.pincode,
+                                        gstin: b.gstin || "",
+                                    });
+                                }}
+                            >
+                                ✏️ Edit
+                            </button>
+                            <button
+                                className="btn-secondary"
+                                style={{ padding: "8px 12px", fontSize: "0.8rem", color: "var(--red)", borderColor: "rgba(255,95,87,0.3)" }}
+                                title="Delete Branch"
+                                onClick={() => handleDeleteBranch(b)}
+                            >
+                                🗑️
+                            </button>
                         </div>
                     </div>
                 ))}
             </div>
+
+            {/* Edit Branch Modal */}
+            {editingBranch && (
+                <div className="modal-overlay" onClick={() => setEditingBranch(null)}>
+                    <div className="card modal" style={{ maxWidth: "550px" }} onClick={e => e.stopPropagation()}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+                            <h2 style={{ fontSize: "1.3rem", fontWeight: 700 }}>✏️ Edit Branch: {editingBranch.name}</h2>
+                            <button className="btn-secondary" onClick={() => setEditingBranch(null)}>✕</button>
+                        </div>
+                        <form onSubmit={handleUpdate} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                            <div className="input-group" style={{ gridColumn: "span 2" }}>
+                                <label className="input-label">Branch Name</label>
+                                <input
+                                    className="input"
+                                    required
+                                    value={formData.name}
+                                    onChange={e => setFormData({ ...formData, name: e.target.value })}
+                                />
+                            </div>
+                            <div className="input-group" style={{ gridColumn: "span 2" }}>
+                                <label className="input-label">Address</label>
+                                <input
+                                    className="input"
+                                    required
+                                    value={formData.address}
+                                    onChange={e => setFormData({ ...formData, address: e.target.value })}
+                                />
+                            </div>
+                            <div className="input-group">
+                                <label className="input-label">City</label>
+                                <input
+                                    className="input"
+                                    required
+                                    value={formData.city}
+                                    onChange={e => setFormData({ ...formData, city: e.target.value })}
+                                />
+                            </div>
+                            <div className="input-group">
+                                <label className="input-label">State</label>
+                                <input
+                                    className="input"
+                                    required
+                                    value={formData.state}
+                                    onChange={e => setFormData({ ...formData, state: e.target.value })}
+                                />
+                            </div>
+                            <div className="input-group">
+                                <label className="input-label">Pincode</label>
+                                <input
+                                    className="input"
+                                    required
+                                    value={formData.pincode}
+                                    onChange={e => setFormData({ ...formData, pincode: e.target.value })}
+                                />
+                            </div>
+                            <div className="input-group">
+                                <label className="input-label">Branch GSTIN (Optional)</label>
+                                <input
+                                    className="input"
+                                    value={formData.gstin}
+                                    onChange={e => setFormData({ ...formData, gstin: e.target.value })}
+                                />
+                            </div>
+                            <div style={{ display: "flex", gap: "12px", marginTop: "12px", gridColumn: "span 2" }}>
+                                <button type="submit" className="btn-primary" style={{ flex: 1 }}>Save Branch Changes</button>
+                                <button type="button" className="btn-secondary" onClick={() => setEditingBranch(null)}>Cancel</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
 
             {limitReached && (
                 <div style={{

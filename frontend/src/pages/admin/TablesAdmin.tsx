@@ -6,15 +6,16 @@ export default function TablesAdmin() {
     const [tables, setTables] = useState<any[]>([]);
     const [branchId, setBranchId] = useState<string>("");
     const [newNum, setNewNum] = useState("");
+    const [showAdd, setShowAdd] = useState(false);
+    const [editingTable, setEditingTable] = useState<any | null>(null);
+    const [editNum, setEditNum] = useState("");
+
     const [qrResult, setQrResult] = useState<{
         table_number: number;
         wa_link: string;
         kiosk_path?: string;
         token?: string;
     } | null>(null);
-
-
-    const [showAdd, setShowAdd] = useState(false);
 
     useEffect(() => {
         const staff = JSON.parse(localStorage.getItem("hd_staff") || "{}");
@@ -41,8 +42,13 @@ export default function TablesAdmin() {
 
     useEffect(() => {
         if (!branchId) return;
-        api.get(`/admin/tables?branch_id=${branchId}`).then((r) => setTables(r.data));
+        reloadTables();
     }, [branchId]);
+
+    async function reloadTables() {
+        const r = await api.get(`/admin/tables?branch_id=${branchId}`);
+        setTables(r.data);
+    }
 
     async function addTable() {
         if (!newNum) {
@@ -57,10 +63,40 @@ export default function TablesAdmin() {
             await api.post("/admin/tables", { branch_id: branchId, table_number: parseInt(newNum) });
             setNewNum("");
             setShowAdd(false);
-            const r = await api.get(`/admin/tables?branch_id=${branchId}`);
-            setTables(r.data);
+            await reloadTables();
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to add table");
+        }
+    }
+
+    async function updateTableNumber() {
+        if (!editingTable || !editNum) return;
+        try {
+            await api.patch(`/admin/tables/${editingTable.id}`, { table_number: parseInt(editNum) });
+            setEditingTable(null);
+            setEditNum("");
+            await reloadTables();
+        } catch (err: any) {
+            alert(err.response?.data?.detail || "Failed to update table");
+        }
+    }
+
+    async function toggleTableStatus(table: any) {
+        try {
+            await api.patch(`/admin/tables/${table.id}`, { is_active: !table.is_active });
+            await reloadTables();
+        } catch (err: any) {
+            alert(err.response?.data?.detail || "Failed to update table status");
+        }
+    }
+
+    async function deleteTable(table: any) {
+        if (!window.confirm(`Are you sure you want to delete Table T${table.table_number}?`)) return;
+        try {
+            await api.delete(`/admin/tables/${table.id}`);
+            await reloadTables();
+        } catch (err: any) {
+            alert(err.response?.data?.detail || "Failed to delete table");
         }
     }
 
@@ -72,61 +108,116 @@ export default function TablesAdmin() {
     return (
         <div>
             <div className="page-header">
-                <div><h1 className="page-title">Tables</h1><p className="page-sub">{tables.length} tables configured</p></div>
-                <button className="btn btn-primary" onClick={() => setShowAdd(true)}>+ Add Table</button>
+                <div>
+                    <h1 className="page-title">Table Management</h1>
+                    <p className="page-sub">{tables.length} tables configured for this branch</p>
+                </div>
+                <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
+                    + Add New Table
+                </button>
             </div>
 
             <div className="card table-wrap">
                 <table>
-                    <thead><tr><th>Table #</th><th>ID</th><th>Active</th><th>Smart Tablet Kiosk & QR</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>Table #</th>
+                            <th>Status</th>
+                            <th>Smart Tablet Kiosk & QR</th>
+                            <th style={{ textAlign: "right" }}>Actions</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        {tables.map((t) => (
-                            <tr key={t.id}>
-                                <td style={{ fontWeight: 700, fontSize: "1.1rem" }}>T{t.table_number}</td>
-                                <td className="text-muted text-sm">{t.id.slice(0, 8)}…</td>
-                                <td><span style={{ color: t.is_active ? "var(--green)" : "var(--red)" }}>{t.is_active ? "Active" : "Inactive"}</span></td>
-                                <td>
-                                    <div className="flex gap-2">
-                                        <a
-                                            className="btn btn-primary btn-sm"
-                                            href={`/kiosk?table_id=${t.id}`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            style={{ textDecoration: "none" }}
-                                        >
-                                            📱 Launch Tablet UI
-                                        </a>
-                                        <button className="btn btn-outline btn-sm" onClick={() => generateQR(t.id)}>
-                                            🔗 Generate Table QR
-                                        </button>
-                                    </div>
+                        {tables.length === 0 ? (
+                            <tr>
+                                <td colSpan={4} className="text-muted text-center" style={{ padding: 24 }}>
+                                    No tables configured yet. Click "+ Add New Table" above!
                                 </td>
                             </tr>
-                        ))}
+                        ) : (
+                            tables.map((t) => (
+                                <tr key={t.id}>
+                                    <td style={{ fontWeight: 800, fontSize: "1.15rem", color: "var(--accent)" }}>
+                                        🪑 Table T{t.table_number}
+                                    </td>
+                                    <td>
+                                        <span style={{ color: t.is_active ? "var(--green)" : "var(--red)", fontWeight: 700 }}>
+                                            {t.is_active ? "● Active" : "○ Inactive"}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div className="flex gap-2">
+                                            <a
+                                                className="btn btn-primary btn-sm"
+                                                href={`/kiosk?table_id=${t.id}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                style={{ textDecoration: "none" }}
+                                            >
+                                                📱 Launch Tablet UI
+                                            </a>
+                                            <button className="btn btn-outline btn-sm" onClick={() => generateQR(t.id)}>
+                                                🔗 Generate QR
+                                            </button>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div className="flex gap-2 justify-end">
+                                            <button
+                                                className="btn btn-outline btn-sm"
+                                                style={{ padding: "4px 8px", fontSize: "0.78rem" }}
+                                                onClick={() => toggleTableStatus(t)}
+                                            >
+                                                {t.is_active ? "Deactivate" : "Activate"}
+                                            </button>
+                                            <button
+                                                className="btn btn-outline btn-sm"
+                                                style={{ padding: "4px 8px", fontSize: "0.78rem" }}
+                                                title="Edit Table Number"
+                                                onClick={() => {
+                                                    setEditingTable(t);
+                                                    setEditNum(String(t.table_number));
+                                                }}
+                                            >
+                                                ✏️ Edit
+                                            </button>
+                                            <button
+                                                className="btn btn-outline btn-sm"
+                                                style={{ padding: "4px 8px", fontSize: "0.78rem", borderColor: "var(--red)", color: "var(--red)" }}
+                                                title="Delete Table"
+                                                onClick={() => deleteTable(t)}
+                                            >
+                                                🗑️ Delete
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))
+                        )}
                     </tbody>
                 </table>
             </div>
 
-
+            {/* Add Table Modal */}
             {showAdd && (
                 <div className="modal-overlay" onClick={() => setShowAdd(false)}>
                     <div className="card modal" onClick={(e) => e.stopPropagation()}>
-                        <h2 style={{ marginBottom: 20 }}>Add New Table</h2>
+                        <h2 style={{ marginBottom: 20 }}>+ Add New Restaurant Table</h2>
                         <div className="input-group">
                             <label className="input-label">Table Number</label>
                             <input
                                 className="input"
                                 type="number"
-                                placeholder="Enter table number (e.g. 1)"
+                                placeholder="Enter table number (e.g. 5)"
                                 value={newNum}
                                 onChange={(e) => setNewNum(e.target.value)}
                                 autoFocus
                             />
                         </div>
                         <p className="text-muted text-sm" style={{ marginBottom: 20 }}>
-                            This table will be added to the currently selected branch.
+                            This table will be added to your active restaurant branch.
                         </p>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 justify-end">
                             <button className="btn btn-outline" onClick={() => setShowAdd(false)}>Cancel</button>
                             <button className="btn btn-primary" onClick={addTable}>Create Table</button>
                         </div>
@@ -134,6 +225,30 @@ export default function TablesAdmin() {
                 </div>
             )}
 
+            {/* Edit Table Modal */}
+            {editingTable && (
+                <div className="modal-overlay" onClick={() => setEditingTable(null)}>
+                    <div className="card modal" onClick={(e) => e.stopPropagation()}>
+                        <h2 style={{ marginBottom: 20 }}>✏️ Edit Table Number</h2>
+                        <div className="input-group">
+                            <label className="input-label">Table Number</label>
+                            <input
+                                className="input"
+                                type="number"
+                                value={editNum}
+                                onChange={(e) => setEditNum(e.target.value)}
+                                autoFocus
+                            />
+                        </div>
+                        <div className="flex gap-2 justify-end">
+                            <button className="btn btn-outline" onClick={() => setEditingTable(null)}>Cancel</button>
+                            <button className="btn btn-primary" onClick={updateTableNumber}>Save Table</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* QR Modal */}
             {qrResult && (
                 <div className="modal-overlay" onClick={() => setQrResult(null)}>
                     <div className="card modal" onClick={(e) => e.stopPropagation()}>
@@ -194,7 +309,6 @@ export default function TablesAdmin() {
                     </div>
                 </div>
             )}
-
         </div>
     );
 }

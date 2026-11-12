@@ -93,6 +93,19 @@ async def update_category(cat_id: uuid.UUID, data: dict, db: AsyncSession = Depe
     return cat
 
 
+@router.delete("/categories/{cat_id}")
+async def delete_category(cat_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(MenuCategory).where(MenuCategory.id == cat_id))
+    cat = result.scalar_one_or_none()
+    if not cat:
+        raise HTTPException(404, "Category not found")
+    cat.is_active = False
+    await db.commit()
+    cache.invalidate_prefix(f"static_menu:{cat.branch_id}")
+    cache.invalidate_prefix(f"ai_static_context:{cat.branch_id}")
+    return {"ok": True}
+
+
 # ─── Items ────────────────────────────────────────────────────────────────────
 @router.post("/items")
 async def create_item(data: ItemCreate, db: AsyncSession = Depends(get_db)):

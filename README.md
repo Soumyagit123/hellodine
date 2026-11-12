@@ -126,17 +126,91 @@ Frontend application will be accessible at `http://localhost:5173`.
 
 ---
 
+---
+
+## 👥 Role-Based Access Control & User Hierarchy
+
+HelloDine implements a strict multi-tenant role hierarchy designed for single-restaurant setups or multi-outlet restaurant chains:
+
+```mermaid
+flowchart TD
+    SA["🌐 SYSTEM_ADMIN (Platform SaaS Owner)"] --> SuperAdmin["👑 SUPER_ADMIN (Restaurant Business Owner)"]
+    SuperAdmin --> BranchAdmin["🏢 BRANCH_ADMIN (Store / Outlet Manager)"]
+    BranchAdmin --> Cashier["💰 CASHIER (Billing & Payment Counter)"]
+    BranchAdmin --> Kitchen["👨‍🍳 KITCHEN (Chef & Kitchen Display System)"]
+    SuperAdmin --> Cashier
+    SuperAdmin --> Kitchen
+```
+
+### Role Breakdown & Capabilities
+
+#### 1. 🌐 SYSTEM_ADMIN (Platform SaaS Owner)
+* **Who it is:** The application owner / platform administrator hosting the HelloDine SaaS.
+* **Scope & Responsibilities:**
+  * Global platform-level control across all restaurant tenants.
+  * Onboards and activates new restaurants.
+  * Resets Super Admin passwords if an owner gets locked out.
+  * Can view and bind kiosk tables across any restaurant in the system.
+  * Accesses the dedicated System Dashboard at `/system`.
+
+#### 2. 👑 SUPER_ADMIN (Restaurant Owner / General Manager)
+* **Who it is:** The business owner of an individual restaurant (e.g. *Spice Garden*).
+* **Scope & Responsibilities:**
+  * Owns the entire restaurant brand and all its branches.
+  * Creates, edits, and manages **multiple branches** (e.g., Campus Branch, Downtown Branch).
+  * Manages **restaurant-wide menu categories, dishes, prices, and bestsellers**.
+  * Creates and manages **all staff roles** (Branch Admins, Cashiers, Chefs).
+  * Views **consolidated multi-branch sales and GST reports**.
+  * Configures **merchant UPI ID and tax settings**.
+
+#### 3. 🏢 BRANCH_ADMIN (Branch / Outlet Manager)
+* **Who it is:** The manager assigned to one specific physical location/outlet.
+* **Scope & Responsibilities:**
+  * **Strictly isolated to their assigned branch:** Cannot access or modify other branches of the restaurant.
+  * Manages **Tables** for their branch (add tables, edit table numbers, generate QR codes, launch tablet kiosks).
+  * Manages **Staff for their branch only** (adds Cashiers, Waiters, and Kitchen Chefs).
+  * Oversees **live orders, kitchen workflow, and daily operational reports** for their outlet.
+  * *Constraint:* Cannot create other Branch Admins or Super Admins, and cannot delete branches.
+
+#### 4. 💰 CASHIER (Billing & Checkout Staff)
+* **Who it is:** The cashier or captain managing table turnover and customer payments.
+* **Scope & Responsibilities:**
+  * Real-time billing dashboard (`/billing`).
+  * Generates GST invoices (CGST + SGST) and presents UPI QR codes for payment.
+  * Approves UPI payments, closes table sessions, and frees tables for incoming guests.
+
+#### 5. 👨‍🍳 KITCHEN (Chef & Kitchen Display Team)
+* **Who it is:** Chefs and kitchen supervisors in the food preparation area.
+* **Scope & Responsibilities:**
+  * Live Kitchen Display Kanban Board (`/orders`).
+  * Real-time acoustic chimes for new incoming orders from Table Kiosks.
+  * Progresses order tickets through `Accepted` $\to$ `Preparing` $\to$ `Ready` $\to$ `Served`.
+
+---
+
 ## 🔑 Default Credentials (Seeded)
 
-| Role | Username / Mobile | Password / PIN | Access Scope |
-| :--- | :--- | :--- | :--- |
-| **Super Admin** | `+91 9000000001` | `admin123` | Full System & All Branches |
-| **Branch Admin** | `+91 9000000002` | `branch123` | Branch Menu, Staff, Reports |
-| **Cashier** | `+91 9000000003` | `cashier123` | Billing, Payments, Orders |
-| **Kitchen Chef** | `+91 9000000004` | `chef123` | Kitchen Orders Board (KDS) |
+When running `python seed.py`, the following demo accounts are seeded into the database:
 
-**Customer Tablet Kiosk**:
-Open directly via: `http://localhost:5173/kiosk` or through generated table tokens: `http://localhost:5173/table/<QR_TOKEN>`.
+| Role | Username / Mobile | Password / PIN | Access Scope & Purpose |
+| :--- | :--- | :--- | :--- |
+| **🌐 System Admin** | `+91 9000000000` | `sysadmin123` | Platform-wide SaaS Dashboard (`/system`) |
+| **👑 Super Admin** | `+91 9000000001` | `admin123` | Restaurant Owner (Full Restaurant & Multi-Branch Access) |
+| **🏢 Branch Admin** | *Created by Super Admin via Staff Admin* | *Set by Super Admin* | Assigned Single Branch Manager (`/admin/tables`, `/admin/staff`) |
+| **💰 Cashier** | `+91 9000000003` | `cashier123` | Cashier Billing & Payments (`/billing`) |
+| **👨‍🍳 Kitchen Chef** | `+91 9000000002` | `kitchen123` | Kitchen Orders Board / KDS (`/orders`) |
+
+> **Tip to Create a Branch Admin:**
+> 1. Sign in as **Super Admin** (`+91 9000000001` / `admin123`).
+> 2. Navigate to **👤 Staff** (`/admin/staff`).
+> 3. Click **+ Add Staff**, select **Role: `BRANCH_ADMIN`**, select the target branch, enter their name, login ID / mobile, and password.
+
+---
+
+### Customer Tablet Kiosk
+* Accessible directly via: `http://localhost:5173/kiosk` (or on your deployed Vercel domain).
+* Bound permanently to a table via QR token: `http://localhost:5173/table/<QR_TOKEN>`.
+* Hardware Unbind Protection: Protected by Master PIN (`1234`) or Admin password to prevent guests from unbinding tablets.
 
 ---
 
