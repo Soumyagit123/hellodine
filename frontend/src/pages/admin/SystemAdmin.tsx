@@ -53,8 +53,12 @@ export default function SystemAdmin() {
         }
     };
 
+    const [submittingAction, setSubmittingAction] = useState(false);
+
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (submittingAction) return;
+        setSubmittingAction(true);
         try {
             // 1. Create Restaurant (Kiosk SaaS — no Meta/WhatsApp API tokens required)
             const restRes = await client.post("/admin/restaurants", {
@@ -94,12 +98,15 @@ export default function SystemAdmin() {
             alert("Restaurant and Owner Account created successfully!");
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to create restaurant");
+        } finally {
+            setSubmittingAction(false);
         }
     };
 
     const handleUpdate = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!editTarget) return;
+        if (!editTarget || submittingAction) return;
+        setSubmittingAction(true);
         try {
             await client.patch(`/admin/restaurants/${editTarget.id}`, {
                 name: formData.name,
@@ -114,10 +121,14 @@ export default function SystemAdmin() {
             fetchRestaurants();
         } catch (err) {
             alert("Failed to update restaurant");
+        } finally {
+            setSubmittingAction(false);
         }
     };
 
     const handleApproveRenewal = async (r: Restaurant, days: number, planOverride?: string) => {
+        if (submittingAction) return;
+        setSubmittingAction(true);
         try {
             await client.post(`/admin/restaurants/${r.id}/approve-renewal`, {
                 days,
@@ -127,23 +138,28 @@ export default function SystemAdmin() {
             alert(`✅ Subscription activated for ${r.name} (+${days} days)!`);
         } catch {
             alert("Failed to approve subscription renewal");
+        } finally {
+            setSubmittingAction(false);
         }
     };
 
     const handleResetPassword = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!resetTarget) return;
+        if (!resetTarget || submittingAction) return;
+        setSubmittingAction(true);
         try {
             await client.post(`/admin/restaurants/${resetTarget.id}/reset-owner-password`, {
                 new_password: newPass
             });
             setResetTarget(null);
             setNewPass("");
-            alert("Owner password reset successfully!");
-        } catch (err) {
+            alert("✅ Owner password reset successfully!");
+        } catch {
             alert("Failed to reset password");
+        } finally {
+            setSubmittingAction(false);
         }
-    }
+    };
 
     const openEdit = (r: Restaurant) => {
         setEditTarget(r);

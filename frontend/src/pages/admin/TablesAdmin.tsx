@@ -9,6 +9,7 @@ export default function TablesAdmin() {
     const [showAdd, setShowAdd] = useState(false);
     const [editingTable, setEditingTable] = useState<any | null>(null);
     const [editNum, setEditNum] = useState("");
+    const [submitting, setSubmitting] = useState(false);
 
     const [qrResult, setQrResult] = useState<{
         table_number: number;
@@ -51,7 +52,7 @@ export default function TablesAdmin() {
     }
 
     async function addTable() {
-        if (!newNum) {
+        if (!newNum || submitting) {
             alert("Please enter a table number");
             return;
         }
@@ -59,6 +60,7 @@ export default function TablesAdmin() {
             alert("No branch selected. Please select a branch from the sidebar.");
             return;
         }
+        setSubmitting(true);
         try {
             await api.post("/admin/tables", { branch_id: branchId, table_number: parseInt(newNum) });
             setNewNum("");
@@ -66,11 +68,14 @@ export default function TablesAdmin() {
             await reloadTables();
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to add table");
+        } finally {
+            setSubmitting(false);
         }
     }
 
     async function updateTableNumber() {
-        if (!editingTable || !editNum) return;
+        if (!editingTable || !editNum || submitting) return;
+        setSubmitting(true);
         try {
             await api.patch(`/admin/tables/${editingTable.id}`, { table_number: parseInt(editNum) });
             setEditingTable(null);
@@ -78,31 +83,48 @@ export default function TablesAdmin() {
             await reloadTables();
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to update table");
+        } finally {
+            setSubmitting(false);
         }
     }
 
     async function toggleTableStatus(table: any) {
+        if (submitting) return;
+        setSubmitting(true);
         try {
             await api.patch(`/admin/tables/${table.id}`, { is_active: !table.is_active });
             await reloadTables();
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to update table status");
+        } finally {
+            setSubmitting(false);
         }
     }
 
     async function deleteTable(table: any) {
-        if (!window.confirm(`Are you sure you want to delete Table T${table.table_number}?`)) return;
+        if (submitting || !window.confirm(`Are you sure you want to delete Table T${table.table_number}?`)) return;
+        setSubmitting(true);
         try {
             await api.delete(`/admin/tables/${table.id}`);
             await reloadTables();
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to delete table");
+        } finally {
+            setSubmitting(false);
         }
     }
 
     async function generateQR(tableId: string) {
-        const r = await api.post(`/admin/tables/${tableId}/qr`);
-        setQrResult(r.data);
+        if (submitting) return;
+        setSubmitting(true);
+        try {
+            const r = await api.post(`/admin/tables/${tableId}/qr`);
+            setQrResult(r.data);
+        } catch (err: any) {
+            alert("Failed to generate QR code");
+        } finally {
+            setSubmitting(false);
+        }
     }
 
     return (
@@ -218,8 +240,10 @@ export default function TablesAdmin() {
                             This table will be added to your active restaurant branch.
                         </p>
                         <div className="flex gap-2 justify-end">
-                            <button className="btn btn-outline" onClick={() => setShowAdd(false)}>Cancel</button>
-                            <button className="btn btn-primary" onClick={addTable}>Create Table</button>
+                            <button className="btn btn-outline" onClick={() => setShowAdd(false)} disabled={submitting}>Cancel</button>
+                            <button className="btn btn-primary" onClick={addTable} disabled={submitting}>
+                                {submitting ? "Creating…" : "Create Table"}
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -227,7 +251,7 @@ export default function TablesAdmin() {
 
             {/* Edit Table Modal */}
             {editingTable && (
-                <div className="modal-overlay" onClick={() => setEditingTable(null)}>
+                <div className="modal-overlay" onClick={() => !submitting && setEditingTable(null)}>
                     <div className="card modal" onClick={(e) => e.stopPropagation()}>
                         <h2 style={{ marginBottom: 20 }}>✏️ Edit Table Number</h2>
                         <div className="input-group">
@@ -241,8 +265,10 @@ export default function TablesAdmin() {
                             />
                         </div>
                         <div className="flex gap-2 justify-end">
-                            <button className="btn btn-outline" onClick={() => setEditingTable(null)}>Cancel</button>
-                            <button className="btn btn-primary" onClick={updateTableNumber}>Save Table</button>
+                            <button className="btn btn-outline" onClick={() => setEditingTable(null)} disabled={submitting}>Cancel</button>
+                            <button className="btn btn-primary" onClick={updateTableNumber} disabled={submitting}>
+                                {submitting ? "Saving…" : "Save Table"}
+                            </button>
                         </div>
                     </div>
                 </div>

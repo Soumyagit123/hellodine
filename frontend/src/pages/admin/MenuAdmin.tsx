@@ -73,77 +73,121 @@ export default function MenuAdmin() {
         setItems(r.data);
     }
 
+    const [submitting, setSubmitting] = useState(false);
+
     // ── Category Actions ────────────────────────────────────────────────────────
     async function createCategory() {
-        if (!catName.trim()) return;
-        await api.post("/menu/categories", { branch_id: branchId, name: catName.trim(), sort_order: categories.length });
-        setCatName("");
-        setShowNewCat(false);
-        await reloadCategories();
+        if (!catName.trim() || submitting) return;
+        setSubmitting(true);
+        try {
+            await api.post("/menu/categories", { branch_id: branchId, name: catName.trim(), sort_order: categories.length });
+            setCatName("");
+            setShowNewCat(false);
+            await reloadCategories();
+        } finally {
+            setSubmitting(false);
+        }
     }
 
     async function updateCategory() {
-        if (!editingCategory || !catName.trim()) return;
-        await api.patch(`/menu/categories/${editingCategory.id}`, { name: catName.trim() });
-        setEditingCategory(null);
-        setCatName("");
-        await reloadCategories();
+        if (!editingCategory || !catName.trim() || submitting) return;
+        setSubmitting(true);
+        try {
+            await api.patch(`/menu/categories/${editingCategory.id}`, { name: catName.trim() });
+            setEditingCategory(null);
+            setCatName("");
+            await reloadCategories();
+        } finally {
+            setSubmitting(false);
+        }
     }
 
     async function deleteCategory(cat: any) {
-        if (!window.confirm(`Are you sure you want to delete category "${cat.name}"?`)) return;
-        await api.delete(`/menu/categories/${cat.id}`);
-        if (selectedCat === cat.id) {
-            setSelectedCat("");
-            setItems([]);
+        if (submitting || !window.confirm(`Are you sure you want to delete category "${cat.name}"?`)) return;
+        setSubmitting(true);
+        try {
+            await api.delete(`/menu/categories/${cat.id}`);
+            if (selectedCat === cat.id) {
+                setSelectedCat("");
+                setItems([]);
+            }
+            await reloadCategories();
+        } finally {
+            setSubmitting(false);
         }
-        await reloadCategories();
     }
 
     // ── Item Actions ────────────────────────────────────────────────────────────
     async function createItem() {
-        if (!itemForm.name.trim() || !itemForm.base_price) return;
-        await api.post("/menu/items", {
-            ...itemForm,
-            branch_id: branchId,
-            category_id: selectedCat,
-            base_price: parseFloat(itemForm.base_price),
-            gst_percent: parseInt(itemForm.gst_percent),
-        });
-        setShowNewItem(false);
-        setItemForm({ name: "", base_price: "", gst_percent: "5", is_veg: true, is_bestseller: false, description: "", category_id: "" });
-        await reloadItems();
+        if (!itemForm.name.trim() || !itemForm.base_price || submitting) return;
+        setSubmitting(true);
+        try {
+            await api.post("/menu/items", {
+                ...itemForm,
+                branch_id: branchId,
+                category_id: selectedCat,
+                base_price: parseFloat(itemForm.base_price),
+                gst_percent: parseInt(itemForm.gst_percent),
+            });
+            setShowNewItem(false);
+            setItemForm({ name: "", base_price: "", gst_percent: "5", is_veg: true, is_bestseller: false, description: "", category_id: "" });
+            await reloadItems();
+        } finally {
+            setSubmitting(false);
+        }
     }
 
     async function updateItem() {
-        if (!editingItem || !itemForm.name.trim() || !itemForm.base_price) return;
-        await api.patch(`/menu/items/${editingItem.id}`, {
-            name: itemForm.name.trim(),
-            description: itemForm.description.trim(),
-            base_price: parseFloat(itemForm.base_price),
-            gst_percent: parseInt(itemForm.gst_percent),
-            is_veg: itemForm.is_veg,
-            is_bestseller: itemForm.is_bestseller,
-            category_id: itemForm.category_id || selectedCat,
-        });
-        setEditingItem(null);
-        await reloadItems();
+        if (!editingItem || !itemForm.name.trim() || !itemForm.base_price || submitting) return;
+        setSubmitting(true);
+        try {
+            await api.patch(`/menu/items/${editingItem.id}`, {
+                name: itemForm.name.trim(),
+                description: itemForm.description.trim(),
+                base_price: parseFloat(itemForm.base_price),
+                gst_percent: parseInt(itemForm.gst_percent),
+                is_veg: itemForm.is_veg,
+                is_bestseller: itemForm.is_bestseller,
+                category_id: itemForm.category_id || selectedCat,
+            });
+            setEditingItem(null);
+            await reloadItems();
+        } finally {
+            setSubmitting(false);
+        }
     }
 
     async function deleteItem(item: any) {
-        if (!window.confirm(`Are you sure you want to delete "${item.name}" from the menu?`)) return;
-        await api.delete(`/menu/items/${item.id}`);
-        await reloadItems();
+        if (submitting || !window.confirm(`Are you sure you want to delete "${item.name}" from the menu?`)) return;
+        setSubmitting(true);
+        try {
+            await api.delete(`/menu/items/${item.id}`);
+            await reloadItems();
+        } finally {
+            setSubmitting(false);
+        }
     }
 
     async function toggleBestseller(item: any) {
-        await api.patch(`/menu/items/${item.id}`, { is_bestseller: !item.is_bestseller });
-        await reloadItems();
+        if (submitting) return;
+        setSubmitting(true);
+        try {
+            await api.patch(`/menu/items/${item.id}`, { is_bestseller: !item.is_bestseller });
+            await reloadItems();
+        } finally {
+            setSubmitting(false);
+        }
     }
 
     async function toggleAvailability(item: any) {
-        await api.patch(`/menu/items/${item.id}`, { is_available: !item.is_available });
-        await reloadItems();
+        if (submitting) return;
+        setSubmitting(true);
+        try {
+            await api.patch(`/menu/items/${item.id}`, { is_available: !item.is_available });
+            await reloadItems();
+        } finally {
+            setSubmitting(false);
+        }
     }
 
     return (
@@ -373,8 +417,10 @@ export default function MenuAdmin() {
                             />
                         </div>
                         <div className="flex gap-2 justify-end">
-                            <button className="btn btn-outline" onClick={() => setShowNewCat(false)}>Cancel</button>
-                            <button className="btn btn-primary" onClick={createCategory}>Create Category</button>
+                            <button className="btn btn-outline" onClick={() => setShowNewCat(false)} disabled={submitting}>Cancel</button>
+                            <button className="btn btn-primary" onClick={createCategory} disabled={submitting}>
+                                {submitting ? "Creating…" : "Create Category"}
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -382,7 +428,7 @@ export default function MenuAdmin() {
 
             {/* Edit Category Modal */}
             {editingCategory && (
-                <div className="modal-overlay" onClick={() => setEditingCategory(null)}>
+                <div className="modal-overlay" onClick={() => !submitting && setEditingCategory(null)}>
                     <div className="card modal" onClick={(e) => e.stopPropagation()}>
                         <h2 style={{ marginBottom: 20 }}>✏️ Edit Category Name</h2>
                         <div className="input-group">
@@ -395,8 +441,10 @@ export default function MenuAdmin() {
                             />
                         </div>
                         <div className="flex gap-2 justify-end">
-                            <button className="btn btn-outline" onClick={() => setEditingCategory(null)}>Cancel</button>
-                            <button className="btn btn-primary" onClick={updateCategory}>Save Changes</button>
+                            <button className="btn btn-outline" onClick={() => setEditingCategory(null)} disabled={submitting}>Cancel</button>
+                            <button className="btn btn-primary" onClick={updateCategory} disabled={submitting}>
+                                {submitting ? "Saving…" : "Save Changes"}
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -404,7 +452,7 @@ export default function MenuAdmin() {
 
             {/* New / Edit Item Modal */}
             {(showNewItem || editingItem) && (
-                <div className="modal-overlay" onClick={() => { setShowNewItem(false); setEditingItem(null); }}>
+                <div className="modal-overlay" onClick={() => { if (!submitting) { setShowNewItem(false); setEditingItem(null); } }}>
                     <div className="card modal" onClick={(e) => e.stopPropagation()}>
                         <h2 style={{ marginBottom: 20 }}>
                             {editingItem ? `✏️ Edit: ${editingItem.name}` : "+ Add New Menu Item"}
@@ -500,14 +548,16 @@ export default function MenuAdmin() {
                             <button
                                 className="btn btn-outline"
                                 onClick={() => { setShowNewItem(false); setEditingItem(null); }}
+                                disabled={submitting}
                             >
                                 Cancel
                             </button>
                             <button
                                 className="btn btn-primary"
                                 onClick={editingItem ? updateItem : createItem}
+                                disabled={submitting}
                             >
-                                {editingItem ? "Save Dish Changes" : "Add Food Item"}
+                                {submitting ? "Saving…" : editingItem ? "Save Dish Changes" : "Add Food Item"}
                             </button>
                         </div>
                     </div>

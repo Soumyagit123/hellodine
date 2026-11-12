@@ -114,21 +114,28 @@ export default function StaffAdmin() {
     }
 
     async function deleteStaff(member: any) {
-        if (!window.confirm(`Are you sure you want to deactivate and remove staff member "${member.name}"?`)) return;
+        if (loading || !window.confirm(`Are you sure you want to deactivate and remove staff member "${member.name}"?`)) return;
+        setLoading(true);
         try {
             await api.delete(`/admin/staff/${member.id}`);
             await reloadStaff();
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to delete staff member");
+        } finally {
+            setLoading(false);
         }
     }
 
     async function toggleActive(member: any) {
+        if (loading) return;
+        setLoading(true);
         try {
             await api.patch(`/admin/staff/${member.id}`, { is_active: !member.is_active });
             await reloadStaff();
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to update staff status");
+        } finally {
+            setLoading(false);
         }
     }
 

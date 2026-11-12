@@ -30,6 +30,7 @@ export default function BranchAdmin() {
     const [loading, setLoading] = useState(true);
     const [showAdd, setShowAdd] = useState(false);
     const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
+    const [submittingBranch, setSubmittingBranch] = useState(false);
     const [formData, setFormData] = useState({
         name: "",
         address: "",
@@ -121,6 +122,8 @@ export default function BranchAdmin() {
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (submittingBranch) return;
+        setSubmittingBranch(true);
         try {
             await client.post("/admin/branches", {
                 ...formData,
@@ -131,12 +134,15 @@ export default function BranchAdmin() {
             fetchBranches();
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to create branch");
+        } finally {
+            setSubmittingBranch(false);
         }
     };
 
     const handleUpdate = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!editingBranch) return;
+        if (!editingBranch || submittingBranch) return;
+        setSubmittingBranch(true);
         try {
             await client.patch(`/admin/branches/${editingBranch.id}`, formData);
             setEditingBranch(null);
@@ -144,17 +150,22 @@ export default function BranchAdmin() {
             alert("✅ Branch details updated successfully!");
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to update branch");
+        } finally {
+            setSubmittingBranch(false);
         }
     };
 
     const handleDeleteBranch = async (branch: Branch) => {
-        if (!window.confirm(`Are you sure you want to delete branch "${branch.name}"? This action cannot be undone.`)) return;
+        if (submittingBranch || !window.confirm(`Are you sure you want to delete branch "${branch.name}"? This action cannot be undone.`)) return;
+        setSubmittingBranch(true);
         try {
             await client.delete(`/admin/branches/${branch.id}`);
             fetchBranches();
             alert(`✅ Branch "${branch.name}" deleted.`);
         } catch (err: any) {
             alert(err.response?.data?.detail || "Failed to delete branch");
+        } finally {
+            setSubmittingBranch(false);
         }
     };
 
@@ -247,7 +258,9 @@ export default function BranchAdmin() {
                                 />
                             </div>
                             <div style={{ display: "flex", gap: "12px", marginTop: "12px", gridColumn: "span 2" }}>
-                                <button type="submit" className="btn-primary" style={{ flex: 1 }}>Create Branch</button>
+                                <button type="submit" className="btn-primary" style={{ flex: 1 }} disabled={submittingBranch}>
+                                    {submittingBranch ? "Creating…" : "Create Branch"}
+                                </button>
                                 <button type="button" className="btn-secondary" onClick={() => setShowAdd(false)}>Cancel</button>
                             </div>
                         </form>
@@ -374,7 +387,9 @@ export default function BranchAdmin() {
                                 />
                             </div>
                             <div style={{ display: "flex", gap: "12px", marginTop: "12px", gridColumn: "span 2" }}>
-                                <button type="submit" className="btn-primary" style={{ flex: 1 }}>Save Branch Changes</button>
+                                <button type="submit" className="btn-primary" style={{ flex: 1 }} disabled={submittingBranch}>
+                                    {submittingBranch ? "Saving…" : "Save Branch Changes"}
+                                </button>
                                 <button type="button" className="btn-secondary" onClick={() => setEditingBranch(null)}>Cancel</button>
                             </div>
                         </form>
