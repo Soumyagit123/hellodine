@@ -94,27 +94,72 @@ function OrderCard({
         canAdvance = false;
     }
 
+    const isServed = order.status === "SERVED";
+    const [isExpanded, setIsExpanded] = useState(!isServed);
+
+    if (isServed && !isExpanded) {
+        return (
+            <div 
+                className="order-card" 
+                style={{ 
+                    padding: "8px 12px", 
+                    cursor: "pointer", 
+                    opacity: 0.8,
+                    background: "rgba(255, 255, 255, 0.03)" 
+                }}
+                onClick={() => setIsExpanded(true)}
+                title="Click to view details"
+            >
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <span style={{ fontWeight: 800, fontSize: "1.1rem" }}>T{tableLabel}</span>
+                        <span className="text-xs text-muted">#{order.order_number}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <span className="badge badge-served" style={{ fontSize: "0.7rem", padding: "2px 6px" }}>SERVED</span>
+                        <span className="text-xs text-muted">₹{Number(order.total).toFixed(0)}</span>
+                    </div>
+                </div>
+                <div className="text-xs text-muted mt-1 truncate" style={{ maxWidth: "100%" }}>
+                    {order.items.map(i => `${i.quantity}x ${i.menu_item?.name || 'Item'}`).join(", ")}
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="order-card">
             <div className="flex items-center justify-between">
-                <div className="order-card-table">T{tableLabel}</div>
+                <div className="flex items-center gap-2">
+                    <div className="order-card-table">T{tableLabel}</div>
+                    {isServed && (
+                        <button 
+                            className="btn btn-outline" 
+                            style={{ padding: "2px 6px", fontSize: "0.7rem", height: "auto" }}
+                            onClick={() => setIsExpanded(false)}
+                            title="Collapse"
+                        >
+                            Collapse ▲
+                        </button>
+                    )}
+                </div>
                 <span className={`badge badge-${order.status.toLowerCase()}`}>{order.status}</span>
             </div>
             <div className="order-card-info">#{order.order_number} · {elapsed} ago</div>
 
             <div className="order-card-items">
                 {order.items.map((item) => (
-                    <div key={item.id} className="mb-2">
+                    <div key={item.id} className="mb-1">
                         <div className="flex justify-between">
                             <span style={{ fontWeight: 600 }}>×{item.quantity} {item.menu_item?.name || item.menu_item_id.slice(0, 8)}</span>
                         </div>
                         {item.variant && (
-                            <div className="text-xs text-muted" style={{ marginLeft: "1.5rem" }}>
+                            <div className="text-xs text-muted" style={{ marginLeft: "1.2rem" }}>
                                 ▫️ {item.variant.name}
                             </div>
                         )}
                         {item.modifiers?.map(mod => (
-                            <div key={mod.id} className="text-xs text-muted" style={{ marginLeft: "1.5rem" }}>
+                            <div key={mod.id} className="text-xs text-muted" style={{ marginLeft: "1.2rem" }}>
                                 + {mod.modifier_name_snapshot}
                             </div>
                         ))}
@@ -126,7 +171,7 @@ function OrderCard({
             </div>
 
             <div className="order-card-footer">
-                <span className="text-muted text-sm">₹{Number(order.total).toFixed(2)}</span>
+                <span className="text-muted text-sm font-semibold">₹{Number(order.total).toFixed(2)}</span>
                 {next && canAdvance && (
                     <button 
                         className="btn btn-sm btn-primary"
@@ -282,8 +327,8 @@ export default function OrdersBoard() {
     }
 
     return (
-        <div>
-            <div className="page-header">
+        <div className="kanban-wrapper">
+            <div className="page-header" style={{ marginBottom: 12 }}>
                 <div>
                     <h1 className="page-title">Kitchen Board</h1>
                     <p className="page-sub">{activeOrders.length} active orders</p>

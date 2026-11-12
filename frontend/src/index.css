@@ -346,32 +346,21 @@ body {
 }
 
 /* ── Kanban Board (Fluid Grid) ───────────────────────────────── */
+.kanban-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 120px);
+  overflow: hidden;
+}
+
 .kanban {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 16px;
-  height: calc(100vh - 160px);
-  min-height: 500px;
-}
-
-@media (max-width: 1400px) {
-  .kanban {
-    grid-template-columns: repeat(3, 1fr);
-    overflow-y: auto;
-    height: auto;
-  }
-}
-
-@media (max-width: 900px) {
-  .kanban {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 600px) {
-  .kanban {
-    grid-template-columns: 1fr;
-  }
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  width: 100%;
 }
 
 .kanban-col {
@@ -380,44 +369,61 @@ body {
   border: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  max-height: 100%;
+  height: 100%;
+  min-height: 0; /* Prevents column from overflowing parent */
+  min-width: 0;  /* Prevents flex/grid children from blowing out width */
   overflow: hidden;
   transition: var(--transition);
 }
 
 .kanban-col:hover {
-  border-color: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .kanban-col-header {
-  padding: 16px;
+  padding: 10px 12px;
   font-weight: 700;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
+  flex-shrink: 0;
 }
 
 .kanban-col-body {
-  flex: 1;
+  flex: 1 1 0%;
+  min-height: 0;
   overflow-y: auto;
-  padding: 12px;
+  overflow-x: hidden;
+  padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
-/* ── Order Cards (Premium Polish) ─────────────────────────────── */
+.kanban-col-body::-webkit-scrollbar {
+  width: 5px;
+}
+.kanban-col-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+.kanban-col-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* ── Order Cards (Compact & Readable for Kitchen) ─────────────── */
 .order-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 16px;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  padding: 12px 14px;
+  transition: all 0.2s ease;
   position: relative;
-  overflow: hidden;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
 .order-card::before {
@@ -427,15 +433,13 @@ body {
   left: 0;
   right: 0;
   height: 3px;
-  opacity: 0.6;
+  opacity: 0.8;
 }
 
 /* Status Glows & Indicators */
 .order-card:has(.badge-new) {
   border-left: 4px solid var(--blue);
-  box-shadow: 0 4px 20px rgba(84, 160, 255, 0.05);
 }
-
 .order-card:has(.badge-new)::before {
   background: var(--blue);
 }
@@ -443,64 +447,65 @@ body {
 .order-card:has(.badge-accepted) {
   border-left: 4px solid var(--yellow);
 }
-
 .order-card:has(.badge-accepted)::before {
   background: var(--yellow);
 }
 
 .order-card:has(.badge-preparing) {
   border-left: 4px solid var(--orange);
-  box-shadow: 0 4px 20px rgba(255, 159, 67, 0.05);
 }
-
 .order-card:has(.badge-preparing)::before {
   background: var(--orange);
 }
 
 .order-card:has(.badge-ready) {
   border-left: 4px solid var(--green);
-  box-shadow: 0 4px 20px rgba(35, 209, 139, 0.1);
+  box-shadow: 0 4px 16px rgba(35, 209, 139, 0.12);
 }
-
 .order-card:has(.badge-ready)::before {
   background: var(--green);
 }
 
+.order-card:has(.badge-served) {
+  opacity: 0.85;
+  border-left: 3px solid rgba(255, 255, 255, 0.2);
+}
+
 .order-card:hover {
-  transform: translateY(-4px);
-  border-color: var(--accent);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5), 0 0 15px var(--accent-glow);
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
 }
 
 .order-card-table {
-  font-size: 2.2rem;
-  font-weight: 900;
+  font-size: 1.4rem;
+  font-weight: 800;
   color: var(--text);
-  line-height: 1;
-  letter-spacing: -0.02em;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
 }
 
 .order-card-info {
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
-  margin-top: 4px;
+  margin-top: 3px;
   font-weight: 500;
 }
 
 .order-card-items {
-  margin: 12px 0;
-  font-size: 0.88rem;
-  line-height: 1.6;
-  padding: 8px 0;
+  margin: 8px 0;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  padding: 6px 0;
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
 
 .order-card-note {
   background: rgba(255, 159, 67, 0.08);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 0.78rem;
+  border-radius: 5px;
+  padding: 4px 8px;
+  font-size: 0.75rem;
   color: var(--orange);
   font-style: italic;
 }
@@ -509,7 +514,8 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 12px;
+  margin-top: 8px;
+  gap: 8px;
 }
 
 /* ── Login ─────────────────────────────────────────────────────── */

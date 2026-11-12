@@ -11,7 +11,8 @@ import time
 
 from app.database import get_db
 from app.models.billing import Bill, Payment, BillStatus, PaymentMethod
-from app.models.orders import Order, OrderStatus
+from app.models.orders import Order, OrderItem, OrderStatus
+from app.models.menu import MenuItem
 from app.models.customers import Customer, TableSession, SessionStatus
 from app.models.auth import StaffUser, StaffRole
 from app.models.tenancy import Table
@@ -238,12 +239,88 @@ async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(g
             "orders": day_row.cnt or 0
         })
 
+    # 5. Generate 6-Month Revenue Trend (Monthly Trend)
+    monthly_trend = []
+    curr_year = today.year
+    curr_month = today.month
+    for m_offset in range(5, -1, -1):
+        target_month = curr_month - m_offset
+        target_year = curr_year
+        while target_month <= 0:
+            target_month += 12
+            target_year -= 1
+
+        import calendar
+        _, last_day = calendar.monthrange(target_year, target_month)
+        m_start = datetime(target_year, target_month, 1, 0, 0, 0).astimezone(timezone.utc)
+        m_end = datetime(target_year, target_month, last_day, 23, 59, 59).astimezone(timezone.utc)
+
+        m_res = await db.execute(
+            select(func.sum(Bill.total).label("rev"), func.count(Bill.id).label("cnt"))
+            .where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID, Bill.created_at >= m_start, Bill.created_at <= m_end)
+        )
+        m_row = m_res.one()
+        monthly_trend.append({
+            "month": m_start.strftime("%b %Y"),
+            "revenue": float(m_row.rev or 0),
+            "orders": m_row.cnt or 0
+        })
+
+    # 6. Top 5 Best Selling Food Items (Ranked by Quantity Sold, with Revenue)
+    top_items_res = await db.execute(
+        select(
+            MenuItem.name.label("name"),
+            func.sum(OrderItem.quantity).label("quantity_sold"),
+            func.sum(OrderItem.line_total).label("revenue_generated")
+        )
+        .join(OrderItem, OrderItem.menu_item_id == MenuItem.id)
+        .join(Order, Order.id == OrderItem.order_id)
+        .where(
+            Order.branch_id == branch_id,
+            Order.status != OrderStatus.CANCELLED
+        )
+        .group_by(MenuItem.id, MenuItem.name)
+        .order_by(func.sum(OrderItem.quantity).desc(), func.sum(OrderItem.line_total).desc())
+        .limit(5)
+    )
+    top_selling_items = [
+        {
+            "name": row.name,
+            "quantity_sold": int(row.quantity_sold or 0),
+            "revenue_generated": float(row.revenue_generated or 0)
+        }
+        for row in top_items_res.all()
+    ]
+
+    # 7. Payment Methods Breakdown (UPI, CASH, CARD)
+    pm_res = await db.execute(
+        select(Payment.method, func.sum(Payment.amount).label("amount"), func.count(Payment.id).label("count"))
+        .join(Bill, Bill.id == Payment.bill_id)
+        .where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID)
+        .group_by(Payment.method)
+    )
+    payment_breakdown = [
+        {"method": str(row.method.value if hasattr(row.method, 'value') else row.method), "amount": float(row.amount or 0), "count": int(row.count or 0)}
+        for row in pm_res.all()
+    ]
+
+    # 8. Average Order Value (AOV)
+    aov_today = round(today_stats["total_revenue"] / today_stats["total_bills"], 2) if today_stats["total_bills"] > 0 else 0
+    aov_lifetime = round(all_time_stats["total_revenue"] / all_time_stats["total_bills"], 2) if all_time_stats["total_bills"] > 0 else 0
+
     dashboard_out = {
         "ok": True,
         "today": today_stats,
         "month": mtd_stats,
         "all_time": all_time_stats,
-        "trend_7d": trend_data
+        "aov": {
+            "today": aov_today,
+            "lifetime": aov_lifetime
+        },
+        "trend_7d": trend_data,
+        "monthly_trend": monthly_trend,
+        "top_selling_items": top_selling_items,
+        "payment_breakdown": payment_breakdown,
     }
     cache.set(cache_key, dashboard_out, ttl_seconds=60)
     return dashboard_out

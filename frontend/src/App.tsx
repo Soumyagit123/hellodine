@@ -122,15 +122,15 @@ function Sidebar({ isOpen, hideSidebar, openPasswordModal }: { isOpen: boolean; 
             {role === "SUPER_ADMIN" && <BranchSelector />}
 
             {role !== "SYSTEM_ADMIN" && (
-                <>
-                    <NavLink to="/orders" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>
-                        🍽️ Orders
-                    </NavLink>
+                <NavLink to="/orders" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>
+                    🍽️ Orders
+                </NavLink>
+            )}
 
-                    <a href="/kiosk" target="_blank" rel="noopener noreferrer" className="nav-link" onClick={hideSidebar} style={{ flexShrink: 0 }}>
-                        📱 Table Kiosk UI
-                    </a>
-                </>
+            {(role === "SUPER_ADMIN" || role === "BRANCH_ADMIN") && (
+                <a href="/kiosk" target="_blank" rel="noopener noreferrer" className="nav-link" onClick={hideSidebar} style={{ flexShrink: 0 }}>
+                    📱 Table Kiosk UI
+                </a>
             )}
 
 
