@@ -18,6 +18,8 @@ from app.bot.wa_sender import send_text
 from app.models.tenancy import Restaurant, Branch
 from app.models.customers import TableSession, Customer
 from app.config import settings
+from app.models.auth import StaffUser, StaffRole
+from app.services.auth_service import get_current_staff
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 
@@ -155,15 +157,46 @@ async def get_order(order_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.patch("/{order_id}/status")
-async def update_status(order_id: uuid.UUID, data: StatusUpdateRequest, db: AsyncSession = Depends(get_db)):
+async def update_status(
+    order_id: uuid.UUID,
+    data: StatusUpdateRequest,
+    current_staff: StaffUser = Depends(get_current_staff),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(
         select(Order)
         .where(Order.id == order_id)
-        .options(selectinload(Order.session).selectinload(TableSession.customer))
+        .options(
+            selectinload(Order.session).selectinload(TableSession.customer),
+            selectinload(Order.table),
+        )
     )
     order = result.scalar_one_or_none()
     if not order:
         raise HTTPException(404, "Order not found")
+
+    # Multi-tenant security check: ensure staff belongs to order's branch or restaurant
+    user_role = current_staff.role.value if hasattr(current_staff.role, "value") else str(current_staff.role)
+    if user_role != "SYSTEM_ADMIN":
+        # Check branch alignment
+        branch_res = await db.execute(select(Branch).where(Branch.id == order.branch_id))
+        branch = branch_res.scalar_one_or_none()
+        if not branch or branch.restaurant_id != current_staff.restaurant_id:
+            raise HTTPException(403, "Access denied to orders outside your restaurant")
+
+    # Role-based workflow validation:
+    # 1. KITCHEN (Chef): Can advance food preparation (ACCEPTED, PREPARING, READY) or handover (SERVED)
+    # 2. CASHIER: Can serve food (SERVED) or cancel order (CANCELLED)
+    # 3. Admins (SUPER_ADMIN, BRANCH_ADMIN): Can cancel orders if needed, but not routine food prep/serve
+    if user_role == "KITCHEN":
+        if data.status not in [OrderStatus.ACCEPTED, OrderStatus.PREPARING, OrderStatus.READY, OrderStatus.SERVED]:
+            raise HTTPException(403, "Kitchen staff can only advance kitchen prep statuses or mark served")
+    elif user_role == "CASHIER":
+        if data.status not in [OrderStatus.SERVED, OrderStatus.CANCELLED]:
+            raise HTTPException(403, "Cashier can only mark orders served or cancelled")
+    elif user_role in ["SUPER_ADMIN", "BRANCH_ADMIN"]:
+        if data.status != OrderStatus.CANCELLED:
+            raise HTTPException(403, "Admins cannot advance food prep or serving steps; this is reserved for Chef and Cashier")
 
     old_status = order.status
     if old_status == data.status:

@@ -46,16 +46,53 @@ type Order = {
 
 function OrderCard({ 
     order, 
+    userRole,
     onAdvance,
     isAdvancing,
 }: { 
     order: Order; 
+    userRole: string;
     onAdvance: (orderId: string, currentStatus: string, nextStatus: string) => void;
     isAdvancing?: boolean;
 }) {
     const next = NEXT_STATUS[order.status];
     const elapsed = formatDistanceToNow(new Date(order.created_at), { addSuffix: false });
     const tableLabel = order.table?.table_number ?? order.table_id?.slice(-4) ?? "—";
+
+    // Role-based permissions:
+    // KITCHEN (Chef): can advance NEW -> ACCEPTED -> PREPARING -> READY
+    // CASHIER: can advance READY -> SERVED (delivery to table)
+    // ADMINS (SYSTEM_ADMIN, SUPER_ADMIN, BRANCH_ADMIN): View-only monitoring (cannot accept/prep/serve routine orders)
+    const isKitchenRole = userRole === "KITCHEN";
+    const isCashierRole = userRole === "CASHIER";
+    const isAdmin = ["SYSTEM_ADMIN", "SUPER_ADMIN", "BRANCH_ADMIN"].includes(userRole);
+
+    let canAdvance = false;
+    let helperMessage = "";
+
+    if (isKitchenRole) {
+        if (["NEW", "ACCEPTED", "PREPARING"].includes(order.status)) {
+            canAdvance = true;
+        } else if (order.status === "READY") {
+            helperMessage = "Waiting for Cashier / Server";
+        }
+    } else if (isCashierRole) {
+        if (order.status === "READY") {
+            canAdvance = true;
+        } else if (["NEW", "ACCEPTED", "PREPARING"].includes(order.status)) {
+            helperMessage = "In Kitchen Prep";
+        }
+    } else if (isAdmin) {
+        // Admins are supervisory / monitoring only — they cannot prepare or serve food
+        canAdvance = false;
+        if (["NEW", "ACCEPTED", "PREPARING"].includes(order.status)) {
+            helperMessage = "Cooking in Kitchen";
+        } else if (order.status === "READY") {
+            helperMessage = "Ready for Table Service";
+        }
+    } else {
+        canAdvance = false;
+    }
 
     return (
         <div className="order-card">
@@ -90,14 +127,27 @@ function OrderCard({
 
             <div className="order-card-footer">
                 <span className="text-muted text-sm">₹{Number(order.total).toFixed(2)}</span>
-                {next && (
+                {next && canAdvance && (
                     <button 
-                        className="btn btn-sm btn-primary" 
+                        className="btn btn-sm btn-primary"
                         disabled={isAdvancing}
                         onClick={() => onAdvance(order.id, order.status, next)}
                     >
                         {isAdvancing ? "Updating…" : STATUS_BTN[order.status]}
                     </button>
+                )}
+                {next && !canAdvance && helperMessage && (
+                    <span 
+                        className="text-xs text-muted" 
+                        style={{ 
+                            background: "rgba(255, 255, 255, 0.05)", 
+                            padding: "4px 8px", 
+                            borderRadius: 6,
+                            border: "1px dashed rgba(255, 255, 255, 0.15)"
+                        }}
+                    >
+                        {helperMessage}
+                    </span>
                 )}
             </div>
         </div>
@@ -107,12 +157,16 @@ function OrderCard({
 export default function OrdersBoard() {
     const [orders, setOrders] = useState<Order[]>([]);
     const [branchId, setBranchId] = useState<string>("");
+    const [userRole, setUserRole] = useState<string>("");
     const [birthdayBanner, setBirthdayBanner] = useState<{ table_number: string; birthday_name: string } | null>(null);
     const [advancingId, setAdvancingId] = useState<string | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
 
     useEffect(() => {
         const staff = JSON.parse(localStorage.getItem("hd_staff") || "{}");
+        if (staff.role) {
+            setUserRole(staff.role);
+        }
         const selectedBranch = localStorage.getItem("hd_selected_branch");
         if (staff.branch_id) {
             setBranchId(staff.branch_id);
@@ -135,36 +189,68 @@ export default function OrdersBoard() {
         if (!branchId) return;
         fetchOrders();
 
+        let isUnmounted = false;
+        let reconnectTimeout: any = null;
         const wsUrl = `${WS_BASE_URL}/orders/ws/kitchen/${branchId}`;
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
 
-        ws.onmessage = (event) => {
-            try {
-                const payload = JSON.parse(event.data);
-                if (payload.event === "BIRTHDAY_CELEBRATION") {
-                    setBirthdayBanner({
-                        table_number: payload.table_number,
-                        birthday_name: payload.birthday_name,
-                    });
-                } else if (payload.event === "ORDER_STATUS_UPDATED" && payload.order_id && payload.status) {
-                    // Update state instantly from WebSocket broadcast without full refetch
-                    setOrders((prev) =>
-                        prev.map((o) => (o.id === payload.order_id ? { ...o, status: payload.status } : o))
-                    );
-                    return;
+        function connectWs() {
+            if (isUnmounted) return;
+            const ws = new WebSocket(wsUrl);
+            wsRef.current = ws;
+
+            ws.onopen = () => {
+                // Instantly sync latest orders as soon as WebSocket connects/reconnects
+                fetchOrders();
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const payload = JSON.parse(event.data);
+                    if (payload.event === "BIRTHDAY_CELEBRATION") {
+                        setBirthdayBanner({
+                            table_number: payload.table_number,
+                            birthday_name: payload.birthday_name,
+                        });
+                        return;
+                    } else if (payload.event === "ORDER_STATUS_UPDATED" && payload.order_id && payload.status) {
+                        // Update state instantly from WebSocket broadcast without full refetch
+                        setOrders((prev) =>
+                            prev.map((o) => (o.id === payload.order_id ? { ...o, status: payload.status } : o))
+                        );
+                        return;
+                    }
+                } catch {
+                    // ignore parse errors
                 }
-            } catch {
-                // ignore parse errors
-            }
-            fetchOrders();
-        };
-        ws.onclose = () => setTimeout(() => fetchOrders(), 3000);
+                fetchOrders();
+            };
 
-        const interval = setInterval(fetchOrders, 15000); // Fallback polling
+            ws.onclose = () => {
+                if (!isUnmounted) {
+                    reconnectTimeout = setTimeout(connectWs, 3000);
+                }
+            };
+
+            ws.onerror = () => {
+                ws.close();
+            };
+        }
+
+        connectWs();
+
+        // Option A Smart Fallback: Only poll if WebSocket is NOT currently connected
+        const interval = setInterval(() => {
+            const currentWs = wsRef.current;
+            if (!currentWs || currentWs.readyState !== WebSocket.OPEN) {
+                fetchOrders();
+            }
+        }, 15000);
+
         return () => {
-            ws.close();
+            isUnmounted = true;
+            if (reconnectTimeout) clearTimeout(reconnectTimeout);
             clearInterval(interval);
+            if (wsRef.current) wsRef.current.close();
         };
     }, [branchId]);
 
@@ -253,6 +339,7 @@ export default function OrdersBoard() {
                                     <OrderCard 
                                         key={o.id} 
                                         order={o} 
+                                        userRole={userRole}
                                         onAdvance={handleAdvance} 
                                         isAdvancing={advancingId === o.id}
                                     />
