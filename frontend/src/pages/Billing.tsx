@@ -151,61 +151,94 @@ export default function Billing() {
 
     useEffect(() => {
         if (!branchId) return;
-        const ws = new WebSocket(`${WS_BASE_URL}/orders/ws/kitchen/${branchId}`);
-        wsRef.current = ws;
 
-        ws.onmessage = (event) => {
-            try {
-                const payload = JSON.parse(event.data);
-                if (payload.event === "TABLE_QR_BILL_PAID" || payload.event === "BILL_PAID") {
-                    const notif: PaymentNotification = {
-                        id: `${payload.bill_id}-${Date.now()}`,
-                        table_number: payload.table_number || "—",
-                        bill_number: payload.bill_number,
-                        amount: Number(payload.amount),
-                        method: payload.method || "UPI (Table QR)",
-                        upi_reference_id: payload.upi_reference_id,
-                        paid_at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                    };
-                    setNotifications((prev) => [notif, ...prev].slice(0, 5));
+        let isUnmounted = false;
+        let reconnectTimeout: any = null;
+        const wsUrl = `${WS_BASE_URL}/orders/ws/kitchen/${branchId}`;
 
-                    // Instantly reflect payment in local state with 0ms delay:
-                    setBills((prev) =>
-                        prev.map((b) => {
-                            if (
-                                b.id === payload.bill_id ||
-                                b.bill_number === payload.bill_number ||
-                                (payload.table_number && String(b.table_number) === String(payload.table_number))
-                            ) {
-                                return {
-                                    ...b,
-                                    status: "PAID",
-                                    closed_at: new Date().toISOString(),
-                                    total: Number(payload.amount || b.total),
-                                };
-                            }
-                            return b;
-                        })
-                    );
+        function connectWs() {
+            if (isUnmounted) return;
+            const ws = new WebSocket(wsUrl);
+            wsRef.current = ws;
 
-                    fetchBills(branchId, false);
-                } else if (
-                    payload.event === "NEW_ORDER" ||
-                    payload.event === "ORDER_STATUS_UPDATED" ||
-                    payload.event === "BILL_UPDATED"
-                ) {
-                    fetchBills(branchId, false);
+            ws.onopen = () => {
+                // Refresh bills as soon as connected/reconnected
+                fetchBills(branchId, false);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const payload = JSON.parse(event.data);
+                    if (payload.event === "TABLE_QR_BILL_PAID" || payload.event === "BILL_PAID") {
+                        const notif: PaymentNotification = {
+                            id: `${payload.bill_id}-${Date.now()}`,
+                            table_number: payload.table_number || "—",
+                            bill_number: payload.bill_number,
+                            amount: Number(payload.amount),
+                            method: payload.method || "UPI (Table QR)",
+                            upi_reference_id: payload.upi_reference_id,
+                            paid_at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                        };
+                        setNotifications((prev) => [notif, ...prev].slice(0, 5));
+
+                        // Instantly reflect payment in local state with 0ms delay:
+                        setBills((prev) =>
+                            prev.map((b) => {
+                                if (
+                                    b.id === payload.bill_id ||
+                                    b.bill_number === payload.bill_number ||
+                                    (payload.table_number && String(b.table_number) === String(payload.table_number))
+                                ) {
+                                    return {
+                                        ...b,
+                                        status: "PAID",
+                                        closed_at: new Date().toISOString(),
+                                        total: Number(payload.amount || b.total),
+                                    };
+                                }
+                                return b;
+                            })
+                        );
+
+                        fetchBills(branchId, false);
+                    } else if (
+                        payload.event === "NEW_ORDER" ||
+                        payload.event === "ORDER_STATUS_UPDATED" ||
+                        payload.event === "BILL_UPDATED"
+                    ) {
+                        fetchBills(branchId, false);
+                    }
+                } catch {
+                    // ignore
                 }
-            } catch {
-                // ignore
-            }
-        };
+            };
 
-        const poll = setInterval(() => fetchBills(branchId, false), 8000);
+            ws.onclose = () => {
+                if (!isUnmounted) {
+                    reconnectTimeout = setTimeout(connectWs, 3000);
+                }
+            };
+
+            ws.onerror = () => {
+                ws.close();
+            };
+        }
+
+        connectWs();
+
+        // Smart WebSocket Fallback: only poll if WebSocket is NOT currently open
+        const poll = setInterval(() => {
+            const currentWs = wsRef.current;
+            if (!currentWs || currentWs.readyState !== WebSocket.OPEN) {
+                fetchBills(branchId, false);
+            }
+        }, 15000);
 
         return () => {
-            ws.close();
+            isUnmounted = true;
+            if (reconnectTimeout) clearTimeout(reconnectTimeout);
             clearInterval(poll);
+            if (wsRef.current) wsRef.current.close();
         };
     }, [branchId, filterDate]);
 

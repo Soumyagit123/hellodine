@@ -759,35 +759,68 @@ export default function TableKiosk() {
             seedOrderStatuses(sessionData.orders);
         }
 
-        const ws = new WebSocket(`${WS_BASE_URL}/orders/ws/table/${sessionId}`);
+        let isUnmounted = false;
+        let reconnectTimeout: any = null;
+        let tableWs: WebSocket | null = null;
+        const wsUrl = `${WS_BASE_URL}/orders/ws/table/${sessionId}`;
 
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.event === "ORDER_STATUS_UPDATED") {
-                    if (data.order_id && data.status) {
-                        announceOrderStatusIfNeeded(data.order_id, data.order_number, data.status);
+        function connectTableWs() {
+            if (isUnmounted) return;
+            const ws = new WebSocket(wsUrl);
+            tableWs = ws;
+
+            ws.onopen = () => {
+                refreshSessionState(sessionId);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.event === "ORDER_STATUS_UPDATED") {
+                        if (data.order_id && data.status) {
+                            announceOrderStatusIfNeeded(data.order_id, data.order_number, data.status);
+                        }
+                        refreshSessionState(sessionId);
+                    } else if (data.event === "SESSION_PAID_AND_EXPIRED") {
+                        triggerGoodbyeFlow(
+                            data.bill_number || "PAID",
+                            Number(data.amount || 0),
+                            0,
+                            0,
+                            0,
+                            data.message || "Thank you for dining with us! Your payment is complete."
+                        );
                     }
-                    refreshSessionState(sessionId);
-                } else if (data.event === "SESSION_PAID_AND_EXPIRED") {
-                    triggerGoodbyeFlow(
-                        data.bill_number || "PAID",
-                        Number(data.amount || 0),
-                        0,
-                        0,
-                        0,
-                        data.message || "Thank you for dining with us! Your payment is complete."
-                    );
+                } catch {
+                    // ignore
                 }
-            } catch {
-                // ignore
-            }
-        };
+            };
 
-        const poll = setInterval(() => refreshSessionState(sessionId), 6000);
+            ws.onclose = () => {
+                if (!isUnmounted) {
+                    reconnectTimeout = setTimeout(connectTableWs, 3000);
+                }
+            };
+
+            ws.onerror = () => {
+                ws.close();
+            };
+        }
+
+        connectTableWs();
+
+        // Smart WebSocket Fallback: only poll if tablet WebSocket is NOT currently open
+        const poll = setInterval(() => {
+            if (!tableWs || tableWs.readyState !== WebSocket.OPEN) {
+                refreshSessionState(sessionId);
+            }
+        }, 15000);
+
         return () => {
-            ws.close();
+            isUnmounted = true;
+            if (reconnectTimeout) clearTimeout(reconnectTimeout);
             clearInterval(poll);
+            if (tableWs) tableWs.close();
         };
     }, [sessionData?.session?.id]);
 
