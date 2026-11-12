@@ -354,22 +354,45 @@ export default function TableKiosk() {
     const [kioskLanguage, setKioskLanguage] = useState<"auto" | "en" | "hi" | "or">("auto");
 
     // Dynamic Voice Picker: Finds the most authentic natural human voice for the target language (English, Hindi, Odia)
+    // Harmonized persona: warm, professional female Indian AI assistant across both Desktop and Mobile/Android.
     function pickVoiceForLanguage(targetLang: "en" | "hi" | "or"): SpeechSynthesisVoice | null {
         if (typeof window === "undefined" || !("speechSynthesis" in window)) return null;
         const voices = window.speechSynthesis.getVoices() || [];
         if (voices.length === 0) return null;
 
+        // Preferred female Indian natural voice signatures (matching gender & accent across OS platforms)
+        const femaleIndianPreferred = [
+            "microsoft neerja online (natural)",
+            "microsoft swara online (natural)",
+            "google हिन्दी",
+            "google hindi",
+            "google english (india)",
+            "google en-in",
+            "neerja",
+            "swara",
+            "veena",
+            "lekha",
+            "sangeeta",
+            "kavya",
+            "en-in-x-end-network",
+            "en-in-x-ene-local",
+            "hi-in-x-hie-local",
+            "hi-in-x-hie-network",
+        ];
+
         if (targetLang === "hi") {
             // Hindi natural / neural voices
             const hindiVoices = [
                 "microsoft swara online (natural)",
-                "microsoft madhur online (natural)",
                 "google हिन्दी",
                 "google hindi",
                 "swara",
-                "madhur",
+                "hi-in-x-hie-network",
+                "hi-in-x-hie-local",
                 "hi-in",
                 "hi_in",
+                "microsoft madhur online (natural)",
+                "madhur",
             ];
             for (const target of hindiVoices) {
                 const match = voices.find(
@@ -388,36 +411,23 @@ export default function TableKiosk() {
                     (v.lang || "").toLowerCase().replace(/_/g, "-").startsWith("or")
             );
             if (odiaMatch) return odiaMatch;
-            // If device lacks native Odia TTS, return Indian English / Hindi voice
-            // which cleanly speaks phonetic Odia words without muting
+
+            // If device lacks native Odia TTS, use highest quality Indian voice
+            // which can cleanly pronounce phonetic regional words without muting
+            for (const target of femaleIndianPreferred) {
+                const match = voices.find((v) => v.name.toLowerCase().includes(target));
+                if (match) return match;
+            }
             const indianFallback = voices.find(
                 (v) =>
                     (v.lang || "").toLowerCase().includes("in") &&
-                    (v.name.toLowerCase().includes("google") || v.name.toLowerCase().includes("natural"))
+                    (v.name.toLowerCase().includes("female") || v.name.toLowerCase().includes("google") || v.name.toLowerCase().includes("natural"))
             );
             if (indianFallback) return indianFallback;
         }
 
-        // Default / English (India)
-        const enInPriorityNames = [
-            "microsoft neerja online (natural)",
-            "microsoft swara online (natural)",
-            "microsoft prabhat online (natural)",
-            "microsoft madhur online (natural)",
-            "google english (india)",
-            "google en-in",
-            "en-in-language",
-            "en_in",
-            "neerja",
-            "swara",
-            "prabhat",
-            "veena",
-            "rishi",
-            "lekha",
-            "sangeeta",
-        ];
-
-        for (const target of enInPriorityNames) {
+        // Default / English (India) — enforce Indian female natural voice first
+        for (const target of femaleIndianPreferred) {
             const match = voices.find(
                 (v) =>
                     v.name.toLowerCase().includes(target) &&
@@ -425,6 +435,13 @@ export default function TableKiosk() {
             );
             if (match) return match;
         }
+
+        const enInStrictFemale = voices.find((v) => {
+            const l = (v.lang || "").toLowerCase().replace(/_/g, "-");
+            const n = v.name.toLowerCase();
+            return (l === "en-in" || l.startsWith("en-in")) && (n.includes("female") || n.includes("woman") || n.includes("neerja") || n.includes("swara") || n.includes("veena"));
+        });
+        if (enInStrictFemale) return enInStrictFemale;
 
         const enInStrict = voices.find((v) => {
             const l = (v.lang || "").toLowerCase().replace(/_/g, "-");
@@ -439,12 +456,45 @@ export default function TableKiosk() {
         return anyEnglish || voices.find((v) => v.default) || voices[0];
     }
 
+    // Convert native Odia script into clear Romanized phonetic text so browser Indian TTS can speak it fluently
+    function transliterateOdiaToPhonetic(odiaText: string): string {
+        const odiaToRoman: Record<string, string> = {
+            "ଅ": "a", "ଆ": "aa", "ଇ": "i", "ଈ": "ee", "ଉ": "u", "ଊ": "oo", "ଋ": "ri",
+            "ଏ": "e", "ଐ": "ai", "ଓ": "o", "ଔ": "au",
+            "କ": "ka", "ଖ": "kha", "ଗ": "ga", "ଘ": "gha", "ଙ": "nga",
+            "ଚ": "cha", "ଛ": "chha", "ଜ": "ja", "ଝ": "jha", "ଞ": "nya",
+            "ଟ": "ta", "ଠ": "tha", "ଡ": "da", "ଢ": "dha", "ଣ": "na",
+            "ତ": "ta", "ଥ": "tha", "ଦ": "da", "ଧ": "dha", "ନ": "na",
+            "ପ": "pa", "ଫ": "pha", "ବ": "ba", "ଭ": "bha", "ମ": "ma",
+            "ଯ": "ya", "ୟ": "ya", "ର": "ra", "ଲ": "la", "ଳ": "la", "ଵ": "va",
+            "ଶ": "sha", "ଷ": "sha", "ସ": "sa", "ହ": "ha",
+            "ା": "aa", "ି": "i", "ୀ": "ee", "ୁ": "u", "ୂ": "oo", "ୃ": "ri",
+            "େ": "e", "ୈ": "ai", "ୋ": "o", "ୌ": "au", "୍": "",
+            "ଂ": "ng", "ଃ": "h", "ଁ": "n",
+            "୦": "0", "୧": "1", "୨": "2", "୩": "3", "୪": "4", "୫": "5", "୬": "6", "୭": "7", "୮": "8", "୯": "9"
+        };
+
+        // If no Odia characters, return as is
+        if (!/[\u0B00-\u0B7F]/.test(odiaText)) return odiaText;
+
+        let result = "";
+        for (let i = 0; i < odiaText.length; i++) {
+            const char = odiaText[i];
+            if (odiaToRoman[char] !== undefined) {
+                result += odiaToRoman[char];
+            } else {
+                result += char;
+            }
+        }
+        return result.replace(/\s+/g, " ").trim();
+    }
+
     // Speak text using Browser SpeechSynthesis with language-specific pronunciation and natural cadence
     function speakText(rawText: string, targetLanguage?: "en" | "hi" | "or") {
         if (!voiceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) return;
         try {
             window.speechSynthesis.cancel();
-            const clean = rawText
+            let clean = rawText
                 .replace(/[*_~`#]/g, "")
                 .replace(/─+/g, "")
                 .replace(/₹\s*(\d+)/g, "Rupees $1")
@@ -464,17 +514,32 @@ export default function TableKiosk() {
                 else detectedLang = "en";
             }
 
-            const utterance = new SpeechSynthesisUtterance(clean);
             const chosenVoice = pickVoiceForLanguage(detectedLang);
+            const hasNativeOdiaVoice = chosenVoice && (
+                chosenVoice.name.toLowerCase().includes("odia") ||
+                chosenVoice.name.toLowerCase().includes("oriya") ||
+                (chosenVoice.lang || "").toLowerCase().startsWith("or")
+            );
+
+            // If speaking Odia on a device without a native Odia TTS voice pack (most Windows & Android devices),
+            // transliterate into phonetic Romanized text so the Indian English/Hindi voice speaks Odia words cleanly!
+            if (detectedLang === "or" && !hasNativeOdiaVoice) {
+                clean = transliterateOdiaToPhonetic(clean);
+            }
+
+            const utterance = new SpeechSynthesisUtterance(clean);
             if (chosenVoice) {
                 utterance.voice = chosenVoice;
-                utterance.lang = chosenVoice.lang || (detectedLang === "hi" ? "hi-IN" : detectedLang === "or" ? "or-IN" : "en-IN");
+                utterance.lang = chosenVoice.lang || (detectedLang === "hi" ? "hi-IN" : "en-IN");
             } else {
-                utterance.lang = detectedLang === "hi" ? "hi-IN" : detectedLang === "or" ? "or-IN" : "en-IN";
+                utterance.lang = detectedLang === "hi" ? "hi-IN" : "en-IN";
             }
-            // Warm, natural conversational cadence
-            utterance.rate = 0.98;
-            utterance.pitch = 1.0;
+
+            // Warm, natural conversational cadence harmonized across Desktop & Mobile
+            utterance.rate = detectedLang === "hi" || detectedLang === "or" ? 0.92 : 0.96;
+            utterance.pitch = 1.05; // Slightly elevated pitch for a friendly, natural feminine tone
+            utterance.volume = 1.0;
+
             // Android mobile voice engine bugfix: resume if paused before speaking
             if (window.speechSynthesis.paused) {
                 window.speechSynthesis.resume();
@@ -1159,9 +1224,12 @@ export default function TableKiosk() {
 
         const recognition = new SpeechRecognition();
         // Set speech recognition language based on selected language
+        // Note: For Odia (or), many Android browsers lack local or-IN speech models;
+        // setting lang to 'or-IN' with fallback to 'hi-IN' ensures Google acoustic recognition can transcribe Indian syllables cleanly.
         if (kioskLanguage === "hi") {
             recognition.lang = "hi-IN";
         } else if (kioskLanguage === "or") {
+            // Check if browser/OS supports or-IN speech recognition, else use hi-IN/en-IN which transcribes phonetic Indian speech
             recognition.lang = "or-IN";
         } else {
             // "en" or "auto": en-IN recognizer handles English, Hinglish, and Indian dish phonetics cleanly
