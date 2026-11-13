@@ -1,5 +1,5 @@
 """Auth router — /api/auth"""
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -7,6 +7,7 @@ from pydantic import BaseModel
 import uuid
 
 from app.database import get_db
+from app.config import settings
 from app.models.auth import StaffUser, StaffRole
 from app.services.auth_service import verify_password, create_access_token, get_current_staff
 
@@ -40,7 +41,11 @@ class ChangePasswordRequest(BaseModel):
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
+async def login(
+    response: Response,
+    form: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db)
+):
     from app.models.tenancy import Restaurant
     from app.services.auth_service import hash_password
 
@@ -100,6 +105,15 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = 
             rest_name = restaurant.name if restaurant else "HelloDine SaaS"
             role_str = str(sys_user.role.value if hasattr(sys_user.role, "value") else sys_user.role)
             token = create_access_token({"sub": str(sys_user.id), "role": role_str, "restaurant_id": str(sys_user.restaurant_id)})
+            response.set_cookie(
+                key="hd_access_token",
+                value=token,
+                httponly=True,
+                secure=True,
+                samesite="lax",
+                max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                path="/api",
+            )
             return TokenResponse(
                 access_token=token,
                 token_type="bearer",
@@ -147,6 +161,15 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = 
     restaurant = res_result.scalar_one()
 
     token = create_access_token({"sub": str(staff.id), "role": staff.role, "restaurant_id": str(staff.restaurant_id)})
+    response.set_cookie(
+        key="hd_access_token",
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/api",
+    )
     return TokenResponse(
         access_token=token,
         token_type="bearer",
@@ -156,6 +179,12 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = 
         restaurant_name=restaurant.name,
         branch_id=str(staff.branch_id) if staff.branch_id else None,
     )
+
+
+@router.post("/logout")
+async def logout(response: Response):
+    response.delete_cookie(key="hd_access_token", path="/api")
+    return {"ok": True}
 
 
 @router.get("/me", response_model=StaffOut)

@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import api, { WS_BASE_URL } from "../api/client";
 import { formatDistanceToNow } from "date-fns";
+import { useBranch } from "../context/BranchContext";
 
 
 const COLUMNS = [
@@ -240,6 +241,7 @@ function OrderCard({
 }
 
 export default function OrdersBoard() {
+    const { selectedBranchId } = useBranch();
     const [orders, setOrders] = useState<Order[]>([]);
     const [branchId, setBranchId] = useState<string>("");
     const [userRole, setUserRole] = useState<string>("");
@@ -252,17 +254,12 @@ export default function OrdersBoard() {
         if (staff.role) {
             setUserRole(staff.role);
         }
-        const selectedBranch = localStorage.getItem("hd_selected_branch");
         if (staff.branch_id) {
             setBranchId(staff.branch_id);
-        } else if (selectedBranch) {
-            setBranchId(selectedBranch);
-        } else if (staff.restaurant_id) {
-            api.get(`/admin/branches?restaurant_id=${staff.restaurant_id}`).then((r) => {
-                if (r.data.length > 0) setBranchId(r.data[0].id);
-            });
+        } else if (selectedBranchId) {
+            setBranchId(selectedBranchId);
         }
-    }, []);
+    }, [selectedBranchId]);
 
     async function fetchOrders() {
         if (!branchId) return;

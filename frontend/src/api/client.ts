@@ -14,7 +14,10 @@ export const API_BASE_URL = rawEnvUrl
 
 export const WS_BASE_URL = API_BASE_URL.replace(/^http/, "ws");
 
-const api = axios.create({ baseURL: API_BASE_URL });
+const api = axios.create({ 
+    baseURL: API_BASE_URL,
+    withCredentials: true,
+});
 
 
 api.interceptors.request.use((config) => {

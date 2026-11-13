@@ -1,16 +1,19 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate } from "react-router-dom";
-import Login from "./pages/Login";
-import OrdersBoard from "./pages/OrdersBoard";
-import Billing from "./pages/Billing";
-import MenuAdmin from "./pages/admin/MenuAdmin";
-import TablesAdmin from "./pages/admin/TablesAdmin";
-import StaffAdmin from "./pages/admin/StaffAdmin";
-import DailyReport from "./pages/admin/DailyReport";
-import BranchAdmin from "./pages/admin/BranchAdmin";
-import SystemAdmin from "./pages/admin/SystemAdmin";
-import TableKiosk from "./pages/kiosk/TableKiosk";
+import { BranchProvider, useBranch } from "./context/BranchContext";
 import client from "./api/client";
+
+// Code-split routes with React.lazy
+const Login = lazy(() => import("./pages/Login"));
+const OrdersBoard = lazy(() => import("./pages/OrdersBoard"));
+const Billing = lazy(() => import("./pages/Billing"));
+const MenuAdmin = lazy(() => import("./pages/admin/MenuAdmin"));
+const TablesAdmin = lazy(() => import("./pages/admin/TablesAdmin"));
+const StaffAdmin = lazy(() => import("./pages/admin/StaffAdmin"));
+const DailyReport = lazy(() => import("./pages/admin/DailyReport"));
+const BranchAdmin = lazy(() => import("./pages/admin/BranchAdmin"));
+const SystemAdmin = lazy(() => import("./pages/admin/SystemAdmin"));
+const TableKiosk = lazy(() => import("./pages/kiosk/TableKiosk"));
 
 
 function isLoggedIn() {
@@ -41,37 +44,7 @@ function RequireRole({ allowedRoles, children }: { allowedRoles: string[]; child
 }
 
 function BranchSelector() {
-    const [branches, setBranches] = useState<any[]>([]);
-    const [selected, setSelected] = useState(localStorage.getItem("hd_selected_branch") || "");
-    const navigate = useNavigate();
-
-    const staff = JSON.parse(localStorage.getItem("hd_staff") || "{}");
-    const restaurantId = staff.restaurant_id;
-
-    useEffect(() => {
-        if (restaurantId) {
-            client.get(`/admin/branches?restaurant_id=${restaurantId}`).then(r => {
-                setBranches(r.data);
-                if (!localStorage.getItem("hd_selected_branch") && r.data.length > 0) {
-                    localStorage.setItem("hd_selected_branch", r.data[0].id);
-                    localStorage.setItem("hd_selected_branch_name", r.data[0].name);
-                    setSelected(r.data[0].id);
-                }
-            });
-        }
-    }, [restaurantId]);
-
-    const handleBranchChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-        const id = e.target.value;
-        const b = branches.find(x => x.id === id);
-        if (b) {
-            localStorage.setItem("hd_selected_branch", b.id);
-            localStorage.setItem("hd_selected_branch_name", b.name);
-            setSelected(b.id);
-            // Refresh current page to apply new branch context
-            window.location.reload();
-        }
-    };
+    const { branches, selectedBranchId, setSelectedBranch } = useBranch();
 
     if (branches.length === 0) return null;
 
@@ -81,8 +54,8 @@ function BranchSelector() {
             <select
                 className="select"
                 style={{ width: "100%", fontSize: "0.8rem", padding: "6px" }}
-                value={selected}
-                onChange={handleBranchChange}
+                value={selectedBranchId}
+                onChange={(e) => setSelectedBranch(e.target.value)}
             >
                 {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
@@ -323,16 +296,31 @@ function ProtectedLayout() {
     );
 }
 
+function PageLoader() {
+    return (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "60vh", color: "var(--text-muted)" }}>
+            <div style={{ textAlign: "center" }}>
+                <div className="spinner" style={{ margin: "0 auto 12px" }}></div>
+                <div style={{ fontSize: "0.85rem" }}>Loading...</div>
+            </div>
+        </div>
+    );
+}
+
 export default function App() {
     return (
-        <BrowserRouter>
-            <Routes>
-                <Route path="/login" element={<Login />} />
-                <Route path="/kiosk" element={<TableKiosk />} />
-                <Route path="/table/:token" element={<TableKiosk />} />
-                <Route path="/*" element={<ProtectedLayout />} />
-            </Routes>
-        </BrowserRouter>
+        <BranchProvider>
+            <BrowserRouter>
+                <Suspense fallback={<PageLoader />}>
+                    <Routes>
+                        <Route path="/login" element={<Login />} />
+                        <Route path="/kiosk" element={<TableKiosk />} />
+                        <Route path="/table/:token" element={<TableKiosk />} />
+                        <Route path="/*" element={<ProtectedLayout />} />
+                    </Routes>
+                </Suspense>
+            </BrowserRouter>
+        </BranchProvider>
     );
 }
 
