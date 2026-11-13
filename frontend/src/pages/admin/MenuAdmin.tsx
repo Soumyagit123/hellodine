@@ -209,15 +209,29 @@ export default function MenuAdmin() {
                 </div>
             </div>
 
-            <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 24, alignItems: "stretch", height: "calc(100vh - 170px)" }}>
                 {/* Categories sidebar */}
-                <div style={{ width: 240, flexShrink: 0 }}>
-                    <div className="flex justify-between items-center" style={{ marginBottom: 10 }}>
-                        <span className="text-muted text-sm font-bold">CATEGORIES</span>
-                        <span className="badge">{categories.length}</span>
+                <div
+                    className="card"
+                    style={{
+                        width: 280,
+                        flexShrink: 0,
+                        padding: "16px 14px",
+                        background: "#161a2d",
+                        border: "1px solid rgba(255, 255, 255, 0.08)",
+                        borderRadius: 16,
+                        boxShadow: "0 8px 24px rgba(0, 0, 0, 0.25)",
+                        height: "100%",
+                        display: "flex",
+                        flexDirection: "column",
+                    }}
+                >
+                    <div className="flex justify-between items-center" style={{ marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid rgba(255, 255, 255, 0.08)", flexShrink: 0 }}>
+                        <span className="text-muted text-xs font-bold" style={{ letterSpacing: "0.08em" }}>CATEGORIES</span>
+                        <span className="badge" style={{ background: "rgba(99, 102, 241, 0.18)", color: "#818cf8" }}>{categories.length}</span>
                     </div>
 
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, overflowY: "auto", paddingRight: 4, flex: 1 }}>
                         {categories.map((c) => (
                             <div
                                 key={c.id}
@@ -225,10 +239,11 @@ export default function MenuAdmin() {
                                     display: "flex",
                                     alignItems: "center",
                                     justifyContent: "space-between",
-                                    background: selectedCat === c.id ? "var(--bg-card)" : "transparent",
-                                    border: selectedCat === c.id ? "1px solid var(--accent)" : "1px solid transparent",
-                                    borderRadius: 8,
-                                    padding: "4px 8px",
+                                    background: selectedCat === c.id ? "rgba(99, 102, 241, 0.15)" : "rgba(255, 255, 255, 0.02)",
+                                    border: selectedCat === c.id ? "1px solid #6366f1" : "1px solid rgba(255, 255, 255, 0.04)",
+                                    borderRadius: 10,
+                                    padding: "8px 12px",
+                                    transition: "all 0.15s ease-in-out",
                                 }}
                             >
                                 <button
@@ -239,17 +254,19 @@ export default function MenuAdmin() {
                                         textAlign: "left",
                                         flex: 1,
                                         fontWeight: selectedCat === c.id ? 700 : 500,
-                                        color: selectedCat === c.id ? "var(--accent)" : "var(--text)",
+                                        fontSize: "0.9rem",
+                                        color: selectedCat === c.id ? "#818cf8" : "#e2e8f0",
                                         cursor: "pointer",
+                                        padding: 0,
                                     }}
                                     onClick={() => setSelectedCat(c.id)}
                                 >
                                     {c.name}
                                 </button>
-                                <div className="flex gap-1">
+                                <div className="flex gap-1" style={{ opacity: selectedCat === c.id ? 1 : 0.65 }}>
                                     <button
                                         type="button"
-                                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.8rem", padding: "2px 4px" }}
+                                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.85rem", padding: "2px 4px" }}
                                         title="Edit Category Name"
                                         onClick={(e) => {
                                             e.stopPropagation();
@@ -261,7 +278,7 @@ export default function MenuAdmin() {
                                     </button>
                                     <button
                                         type="button"
-                                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.8rem", padding: "2px 4px", color: "var(--red)" }}
+                                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.85rem", padding: "2px 4px", color: "var(--red)" }}
                                         title="Delete Category"
                                         onClick={(e) => {
                                             e.stopPropagation();
@@ -277,10 +294,10 @@ export default function MenuAdmin() {
                 </div>
 
                 {/* Items table */}
-                <div style={{ flex: 1, minWidth: 320 }}>
+                <div style={{ flex: 1, minWidth: 320, display: "flex", flexDirection: "column", height: "100%" }}>
                     {selectedCat ? (
                         <>
-                            <div className="flex justify-between items-center mb-3">
+                            <div className="flex justify-between items-center mb-3" style={{ flexShrink: 0 }}>
                                 <span className="text-muted text-sm font-bold">
                                     {categories.find((c) => c.id === selectedCat)?.name || "Dishes"} ({items.length} items)
                                 </span>
@@ -302,19 +319,33 @@ export default function MenuAdmin() {
                                     + Add Food Item
                                 </button>
                             </div>
-                            <div className="card table-wrap">
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th>Dish Name</th>
-                                            <th>Type</th>
-                                            <th>Price</th>
-                                            <th>GST</th>
-                                            <th>⭐ Bestseller</th>
-                                            <th>Status</th>
-                                            <th style={{ textAlign: "right" }}>Actions</th>
-                                        </tr>
-                                    </thead>
+                            <div
+                                className="card"
+                                style={{
+                                    background: "#161a2d",
+                                    border: "1px solid rgba(255, 255, 255, 0.08)",
+                                    borderRadius: 16,
+                                    boxShadow: "0 8px 24px rgba(0, 0, 0, 0.25)",
+                                    flex: 1,
+                                    padding: 0,
+                                    overflow: "hidden",
+                                    display: "flex",
+                                    flexDirection: "column",
+                                }}
+                            >
+                                <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
+                                    <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+                                        <thead>
+                                            <tr>
+                                                <th style={{ position: "sticky", top: 0, zIndex: 10, background: "#161a2d", borderBottom: "1px solid rgba(255, 255, 255, 0.12)" }}>Dish Name</th>
+                                                <th style={{ position: "sticky", top: 0, zIndex: 10, background: "#161a2d", borderBottom: "1px solid rgba(255, 255, 255, 0.12)" }}>Type</th>
+                                                <th style={{ position: "sticky", top: 0, zIndex: 10, background: "#161a2d", borderBottom: "1px solid rgba(255, 255, 255, 0.12)" }}>Price</th>
+                                                <th style={{ position: "sticky", top: 0, zIndex: 10, background: "#161a2d", borderBottom: "1px solid rgba(255, 255, 255, 0.12)" }}>GST</th>
+                                                <th style={{ position: "sticky", top: 0, zIndex: 10, background: "#161a2d", borderBottom: "1px solid rgba(255, 255, 255, 0.12)" }}>⭐ Bestseller</th>
+                                                <th style={{ position: "sticky", top: 0, zIndex: 10, background: "#161a2d", borderBottom: "1px solid rgba(255, 255, 255, 0.12)" }}>Status</th>
+                                                <th style={{ position: "sticky", top: 0, zIndex: 10, background: "#161a2d", borderBottom: "1px solid rgba(255, 255, 255, 0.12)", textAlign: "right" }}>Actions</th>
+                                            </tr>
+                                        </thead>
                                     <tbody>
                                         {items.length === 0 ? (
                                             <tr>
@@ -400,6 +431,7 @@ export default function MenuAdmin() {
                                         )}
                                     </tbody>
                                 </table>
+                                </div>
                             </div>
                         </>
                     ) : (
