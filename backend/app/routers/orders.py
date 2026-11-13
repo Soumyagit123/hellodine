@@ -189,8 +189,8 @@ async def update_status(
     # 2. CASHIER: Can serve food (SERVED) or cancel order (CANCELLED)
     # 3. Admins (SUPER_ADMIN, BRANCH_ADMIN): Can cancel orders if needed, but not routine food prep/serve
     if user_role == "KITCHEN":
-        if data.status not in [OrderStatus.ACCEPTED, OrderStatus.PREPARING, OrderStatus.READY, OrderStatus.SERVED]:
-            raise HTTPException(403, "Kitchen staff can only advance kitchen prep statuses or mark served")
+        if data.status not in [OrderStatus.ACCEPTED, OrderStatus.PREPARING, OrderStatus.READY, OrderStatus.SERVED, OrderStatus.CANCELLED]:
+            raise HTTPException(403, "Kitchen staff can only advance kitchen prep statuses, mark served, or cancel/reject")
     elif user_role == "CASHIER":
         if data.status not in [OrderStatus.SERVED, OrderStatus.CANCELLED]:
             raise HTTPException(403, "Cashier can only mark orders served or cancelled")
@@ -268,6 +268,77 @@ async def update_status(
         asyncio.create_task(_send_wa_background(raw_phone, order.order_number, data.status, order.branch_id))
 
     return {"ok": True, "status": order.status}
+
+
+@router.post("/{order_id}/items/{item_id}/reject")
+async def reject_order_item(
+    order_id: uuid.UUID,
+    item_id: uuid.UUID,
+    current_staff: StaffUser = Depends(get_current_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reject a single unavailable/finished item from an order without cancelling the rest."""
+    user_role = current_staff.role.value if hasattr(current_staff.role, "value") else str(current_staff.role)
+    if user_role not in ("KITCHEN", "CASHIER", "SUPER_ADMIN", "BRANCH_ADMIN", "SYSTEM_ADMIN"):
+        raise HTTPException(403, "Not authorized to reject order items")
+
+    result = await db.execute(
+        select(Order)
+        .where(Order.id == order_id)
+        .options(selectinload(Order.items).selectinload(OrderItem.menu_item))
+    )
+    order = result.scalar_one_or_none()
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    target_item = next((it for it in order.items if it.id == item_id), None)
+    if not target_item:
+        raise HTTPException(404, "Order item not found")
+
+    rejected_name = target_item.menu_item.name if target_item.menu_item else "Item"
+    remaining_items = [it for it in order.items if it.id != item_id]
+    await db.delete(target_item)
+
+    if not remaining_items:
+        order.status = OrderStatus.CANCELLED
+        order.subtotal = 0
+        order.cgst_amount = 0
+        order.sgst_amount = 0
+        order.total = 0
+    else:
+        new_subtotal = sum(float(it.line_total or 0) for it in remaining_items)
+        new_tax = sum(float(it.line_total or 0) * float(getattr(it, "gst_percent", 5) or 0) / 100.0 for it in remaining_items)
+        half_tax = round(new_tax / 2.0, 2)
+        order.subtotal = round(new_subtotal, 2)
+        order.cgst_amount = half_tax
+        order.sgst_amount = half_tax
+        order.total = round(new_subtotal + new_tax, 2)
+
+    await db.commit()
+
+    cache.invalidate_prefix(f"orders_board:{order.branch_id}")
+    cache.invalidate_prefix(f"billing_tx:{order.branch_id}")
+    cache.invalidate_prefix(f"corp_dashboard:{order.branch_id}")
+    cache.invalidate_prefix(f"daily_report:{order.branch_id}")
+
+    try:
+        from app.services.billing_service import sync_session_bill
+        await sync_session_bill(order.session_id, db)
+        await db.commit()
+    except Exception as bill_err:
+        print(f"Warning: bill sync on item rejection failed: {bill_err}")
+
+    payload = {
+        "event": "ITEM_REJECTED",
+        "order_id": str(order.id),
+        "order_number": order.order_number,
+        "item_name": rejected_name,
+        "order_cancelled": len(remaining_items) == 0,
+    }
+    await manager.broadcast_to_branch(str(order.branch_id), payload)
+    await manager.broadcast_to_table(str(order.session_id), payload)
+
+    return {"ok": True, "item_name": rejected_name, "order_cancelled": len(remaining_items) == 0}
 
 
 @router.websocket("/ws/kitchen/{branch_id}")

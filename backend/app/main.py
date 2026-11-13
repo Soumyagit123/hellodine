@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
 import app.models  # ensure all models are registered before create_all
 
-from app.routers import auth, restaurant, menu, cart, orders, billing, webhook, kiosk
+from app.routers import auth, restaurant, menu, cart, orders, billing, webhook, kiosk, menu_agent
 
 
 
@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             await conn.execute(text("ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS merchant_upi_id TEXT"))
             await conn.execute(text("ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS subscription_plan TEXT DEFAULT 'STARTER'"))
+            await conn.execute(text("ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS image_url TEXT"))
             await conn.execute(text("ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS subscription_status TEXT DEFAULT 'ACTIVE'"))
             await conn.execute(text("ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ"))
             await conn.execute(text("ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS pending_renewal_plan TEXT"))
@@ -109,6 +110,7 @@ app.include_router(orders.router)
 app.include_router(billing.router)
 app.include_router(webhook.router)
 app.include_router(kiosk.router)
+app.include_router(menu_agent.router)
 
 
 

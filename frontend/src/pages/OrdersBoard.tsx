@@ -152,6 +152,43 @@ function OrderCard({
                     <div key={item.id} className="mb-1">
                         <div className="flex justify-between">
                             <span style={{ fontWeight: 600 }}>×{item.quantity} {item.menu_item?.name || item.menu_item_id.slice(0, 8)}</span>
+                            {(userRole === "KITCHEN" || userRole === "CASHIER") && order.status === "NEW" && (
+                                <button
+                                    type="button"
+                                    title={`Reject ${item.menu_item?.name || "item"} (unavailable / finished)`}
+                                    onClick={async (e) => {
+                                        const btn = e.currentTarget;
+                                        const row = btn.closest(".order-card-item") as HTMLElement | null;
+                                        if (row) {
+                                            row.style.opacity = "0.4";
+                                            row.style.pointerEvents = "none";
+                                        }
+                                        btn.disabled = true;
+                                        btn.textContent = "…";
+                                        try {
+                                            await api.post(`/orders/${order.id}/items/${item.id}/reject`);
+                                        } finally {
+                                            if (row) {
+                                                row.style.opacity = "1";
+                                                row.style.pointerEvents = "auto";
+                                            }
+                                        }
+                                    }}
+                                    style={{
+                                        marginLeft: "auto",
+                                        background: "transparent",
+                                        border: "1px solid rgba(248,113,113,0.4)",
+                                        color: "#f87171",
+                                        borderRadius: 4,
+                                        padding: "0 5px",
+                                        fontSize: "0.7rem",
+                                        cursor: "pointer",
+                                        lineHeight: "16px",
+                                    }}
+                                >
+                                    ✕
+                                </button>
+                            )}
                         </div>
                         {item.variant && (
                             <div className="text-xs text-muted" style={{ marginLeft: "1.2rem" }}>
@@ -170,17 +207,20 @@ function OrderCard({
                 ))}
             </div>
 
-            <div className="order-card-footer">
+            <div className="order-card-footer" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", justifyContent: "space-between" }}>
                 <span className="text-muted text-sm font-semibold">₹{Number(order.total).toFixed(2)}</span>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {next && canAdvance && (
                     <button 
                         className="btn btn-sm btn-primary"
+                        style={{ padding: "4px 10px", fontSize: "0.78rem" }}
                         disabled={isAdvancing}
                         onClick={() => onAdvance(order.id, order.status, next)}
                     >
                         {isAdvancing ? "Updating…" : STATUS_BTN[order.status]}
                     </button>
                 )}
+                </div>
                 {next && !canAdvance && helperMessage && (
                     <span 
                         className="text-xs text-muted" 

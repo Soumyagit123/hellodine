@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../../api/client";
+import MenuImportModal from "../../components/MenuImportModal";
 
 export default function MenuAdmin() {
     const [categories, setCategories] = useState<any[]>([]);
@@ -9,6 +10,7 @@ export default function MenuAdmin() {
 
     // Category Modals
     const [showNewCat, setShowNewCat] = useState(false);
+    const [showImportModal, setShowImportModal] = useState(false);
     const [editingCategory, setEditingCategory] = useState<any | null>(null);
     const [catName, setCatName] = useState("");
 
@@ -197,9 +199,14 @@ export default function MenuAdmin() {
                     <h1 className="page-title">Menu Management</h1>
                     <p className="page-sub">Manage food categories, items, prices, and chef bestsellers</p>
                 </div>
-                <button className="btn btn-primary btn-sm" onClick={() => { setCatName(""); setShowNewCat(true); }}>
-                    + New Category
-                </button>
+                <div className="flex gap-2">
+                    <button className="btn btn-sm" onClick={() => setShowImportModal(true)}>
+                        🤖 AI Import Menu
+                    </button>
+                    <button className="btn btn-primary btn-sm" onClick={() => { setCatName(""); setShowNewCat(true); }}>
+                        + New Category
+                    </button>
+                </div>
             </div>
 
             <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
@@ -562,6 +569,16 @@ export default function MenuAdmin() {
                         </div>
                     </div>
                 </div>
+            )}
+            {showImportModal && branchId && (
+                <MenuImportModal
+                    branchId={branchId}
+                    onClose={() => setShowImportModal(false)}
+                    onSuccess={async () => {
+                        await reloadCategories();
+                        if (selectedCat) await reloadItems();
+                    }}
+                />
             )}
         </div>
     );

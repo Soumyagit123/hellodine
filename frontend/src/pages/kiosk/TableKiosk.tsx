@@ -20,6 +20,8 @@ type MenuItem = {
     is_veg: boolean;
     is_jain: boolean;
     is_bestseller?: boolean;
+    is_available?: boolean;
+    image_url?: string | null;
     spice_level?: string | null;
 };
 
@@ -309,6 +311,7 @@ export default function TableKiosk() {
     const [videoMode, setVideoMode] = useState<"youtube" | "mp4">("mp4");
     const [customVideoUrl, setCustomVideoUrl] = useState<string>("");
     const [jokeBanner, setJokeBanner] = useState<string | null>(null);
+    const [statusToast, setStatusToast] = useState<{ id: string; icon: string; title: string; message: string; color: string } | null>(null);
 
     const [showBirthdayPrompt, setShowBirthdayPrompt] = useState<boolean>(false);
     const [birthdayInputName, setBirthdayInputName] = useState<string>("");
@@ -743,31 +746,56 @@ export default function TableKiosk() {
         });
 
         // 4. Only announce transitions into ACCEPTED, PREPARING, READY, SERVED, CANCELLED
-        const statusLabels: Record<string, { text: string; voice: string }> = {
+        const statusLabels: Record<string, { text: string; voice: string; icon: string; title: string; color: string }> = {
             ACCEPTED: {
                 text: `✅ *Kitchen Update*: Your order *#${orderNumber}* has been *ACCEPTED* by the kitchen!`,
                 voice: `Good news! The kitchen has accepted your order number ${orderNumber}.`,
+                icon: "✅",
+                title: "Order Accepted!",
+                color: "#10b981",
             },
             PREPARING: {
                 text: `👨‍🍳 *Kitchen Update*: Our chef is now freshly *PREPARING* your order *#${orderNumber}*!`,
                 voice: `Our chef is now preparing your order number ${orderNumber}.`,
+                icon: "👨‍🍳",
+                title: "Order Preparing!",
+                color: "#f59e0b",
             },
             READY: {
                 text: `🔔 *Hot & Ready!*: Your order *#${orderNumber}* is *READY* to be served to your table!`,
                 voice: `Your order number ${orderNumber} is hot and ready to be served!`,
+                icon: "🔔",
+                title: "Hot & Ready to Serve!",
+                color: "#6366f1",
             },
             SERVED: {
                 text: `🍽️ *Order Served*: Your order *#${orderNumber}* has been *SERVED*. Enjoy your meal! 😋`,
                 voice: `Order number ${orderNumber} has been served. Enjoy your meal!`,
+                icon: "🍽️",
+                title: "Order Served!",
+                color: "#10b981",
             },
             CANCELLED: {
-                text: `⚠️ *Order Update*: Your order *#${orderNumber}* was cancelled.`,
-                voice: `Order number ${orderNumber} has been cancelled.`,
+                text: `⚠️ *Order #${orderNumber}*: The item is not available or finished, please order other item, we are sorry for this.`,
+                voice: `Sorry, order number ${orderNumber} was cancelled because the item is not available or finished. Please order another item.`,
+                icon: "⚠️",
+                title: "Order Update",
+                color: "#ef4444",
             },
         };
         const info = statusLabels[newStatus];
         if (info) {
             appendBotMessage(info.text, [{ id: "order_status", title: "👨‍🍳 Check Order Status" }], true, info.voice);
+            setStatusToast({
+                id: `toast-${Date.now()}`,
+                icon: info.icon,
+                title: `${info.title} (#${orderNumber})`,
+                message: info.voice,
+                color: info.color,
+            });
+            setTimeout(() => {
+                setStatusToast((curr) => (curr && curr.title.includes(orderNumber) ? null : curr));
+            }, 6000);
         }
     }
 
@@ -845,6 +873,31 @@ export default function TableKiosk() {
                         if (data.order_id && data.status) {
                             announceOrderStatusIfNeeded(data.order_id, data.order_number, data.status);
                         }
+                        refreshSessionState(sessionId);
+                    } else if (data.event === "ITEM_REJECTED") {
+                        const itemName = data.item_name || "Item";
+                        const ordNum = data.order_number || "";
+                        const msgText = `⚠️ *Order #${ordNum}*: *${itemName}* is not available or finished, please order other item, we are sorry for this.`;
+                        setMessages((prev) => [
+                            ...prev,
+                            {
+                                id: `item-rej-${Date.now()}`,
+                                sender: "bot",
+                                text: msgText,
+                                time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                            },
+                        ]);
+                        speakText(`Sorry, ${itemName} in order number ${ordNum} is not available or finished. Please order another item.`);
+                        setStatusToast({
+                            id: `toast-${Date.now()}`,
+                            icon: "⚠️",
+                            title: `Item Unavailable (#${ordNum})`,
+                            message: `"${itemName}" is not available or finished. Please order another item.`,
+                            color: "#ef4444",
+                        });
+                        setTimeout(() => {
+                            setStatusToast((curr) => (curr && curr.title.includes(ordNum) ? null : curr));
+                        }, 7000);
                         refreshSessionState(sessionId);
                     } else if (data.event === "SESSION_PAID_AND_EXPIRED") {
                         triggerGoodbyeFlow(
@@ -2009,7 +2062,7 @@ export default function TableKiosk() {
                                             }}
                                         >
                                             <img
-                                                src={getFoodImage(dish.name, dish.is_veg)}
+                                                src={dish.image_url || getFoodImage(dish.name, dish.is_veg)}
                                                 alt={dish.name}
                                                 style={{
                                                     width: 54,
@@ -2555,7 +2608,8 @@ export default function TableKiosk() {
                 >
                     {filteredItems.map((item) => {
                         const inCart = cartQtyMap[item.id];
-                        const imgUrl = getFoodImage(item.name, item.is_veg);
+                        const isUnavailable = item.is_available === false;
+                        const imgUrl = item.image_url || getFoodImage(item.name, item.is_veg);
                         const fallbackSvg = getFoodFallbackSvg(item.name, item.is_veg);
                         return (
                             <div
@@ -2566,6 +2620,9 @@ export default function TableKiosk() {
                                     overflow: "hidden",
                                     minHeight: 295,
                                     height: "auto",
+                                    opacity: isUnavailable ? 0.55 : 1,
+                                    filter: isUnavailable ? "grayscale(0.85)" : undefined,
+                                    pointerEvents: isUnavailable ? "none" : undefined,
                                     border: inCart ? "2px solid #ff6b35" : "1px solid rgba(255,255,255,0.1)",
                                     boxShadow: inCart
                                         ? "0 8px 26px rgba(255,107,53,0.25)"
@@ -4073,6 +4130,66 @@ export default function TableKiosk() {
                             </div>
                         </form>
                     </div>
+                </div>
+            )}
+            {/* Visual Status Toast Alert for noisy environments */}
+            {statusToast && (
+                <div
+                    style={{
+                        position: "fixed",
+                        top: 24,
+                        right: 24,
+                        zIndex: 9999,
+                        background: "#161a2d",
+                        border: `2px solid ${statusToast.color}`,
+                        borderRadius: 16,
+                        padding: "16px 20px",
+                        boxShadow: "0 16px 40px rgba(0,0,0,0.6)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 14,
+                        maxWidth: 420,
+                        animation: "slideIn 0.3s ease-out",
+                    }}
+                >
+                    <div
+                        style={{
+                            fontSize: "2rem",
+                            background: "rgba(255,255,255,0.08)",
+                            borderRadius: "50%",
+                            width: 48,
+                            height: 48,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            flexShrink: 0,
+                        }}
+                    >
+                        {statusToast.icon}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 800, fontSize: "1rem", color: statusToast.color, marginBottom: 2 }}>
+                            {statusToast.title}
+                        </div>
+                        <div style={{ fontSize: "0.85rem", color: "#e2e8f0", lineHeight: 1.35 }}>
+                            {statusToast.message}
+                        </div>
+                    </div>
+                    <button
+                        onClick={() => setStatusToast(null)}
+                        style={{
+                            background: "transparent",
+                            border: "none",
+                            color: "#94a3b8",
+                            fontSize: "1.2rem",
+                            cursor: "pointer",
+                            padding: 4,
+                            lineHeight: 1,
+                        }}
+                        title="Dismiss"
+                    >
+                        ✕
+                    </button>
                 </div>
             )}
         </div>
