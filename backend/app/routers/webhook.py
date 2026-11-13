@@ -83,10 +83,14 @@ async def receive_webhook(restaurant_id: uuid.UUID, request: Request):
             logger.error(f"Missing WhatsApp Access Token for restaurant {restaurant_id}")
             return {"status": "ignored", "reason": "missing_credentials"}
 
-        # Verify signature if secret is provided
-        if app_secret:
-            if not verify_signature(body_raw, signature, app_secret):
-                raise HTTPException(401, "Invalid signature")
+        # Strict signature verification (fail-closed)
+        if not app_secret:
+            logger.error(f"Cannot verify webhook: missing app_secret for restaurant {restaurant_id}")
+            raise HTTPException(500, "Webhook secret not configured")
+
+        if not signature or not verify_signature(body_raw, signature, app_secret):
+            logger.warning(f"Invalid or missing signature for restaurant {restaurant_id}")
+            raise HTTPException(401, "Invalid signature")
 
         # Run LangGraph bot
         try:

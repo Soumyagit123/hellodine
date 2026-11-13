@@ -45,13 +45,30 @@ async def generate_bill(session_id: uuid.UUID, db: AsyncSession = Depends(get_db
 
 
 @router.post("/{bill_id}/pay")
-async def pay_bill(bill_id: uuid.UUID, data: PayRequest, db: AsyncSession = Depends(get_db)):
+async def pay_bill(
+    bill_id: uuid.UUID,
+    data: PayRequest,
+    current_staff: Optional[StaffUser] = Depends(get_current_staff),
+    db: AsyncSession = Depends(get_db)
+):
     result = await db.execute(select(Bill).where(Bill.id == bill_id))
     bill = result.scalar_one_or_none()
     if not bill:
         raise HTTPException(404, "Bill not found")
+
+    # Multi-tenant authorization check
+    if current_staff:
+        if current_staff.role != StaffRole.SYSTEM_ADMIN and bill.branch_id != current_staff.branch_id:
+            raise HTTPException(403, "Access denied: bill belongs to a different branch/restaurant")
+
     if bill.status == BillStatus.PAID:
         raise HTTPException(400, "Bill already paid")
+
+    # Payment amount validation against bill total
+    if float(data.amount) <= 0:
+        raise HTTPException(400, "Payment amount must be greater than zero")
+    if abs(float(data.amount) - float(bill.total_amount)) > 0.05:
+        raise HTTPException(400, f"Payment amount ({data.amount}) does not match bill total ({bill.total_amount})")
 
     now = datetime.now(timezone.utc)
     payment = Payment(
@@ -60,7 +77,7 @@ async def pay_bill(bill_id: uuid.UUID, data: PayRequest, db: AsyncSession = Depe
         amount=data.amount,
         upi_vpa=data.upi_vpa,
         upi_reference_id=data.upi_reference_id,
-        received_by_staff_user_id=data.received_by_staff_user_id,
+        received_by_staff_user_id=current_staff.id if current_staff else data.received_by_staff_user_id,
     )
     db.add(payment)
     bill.status = BillStatus.PAID

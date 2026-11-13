@@ -74,8 +74,15 @@ async def place_order(data: PlaceOrderRequest, db: AsyncSession = Depends(get_db
 async def list_orders(
     branch_id: uuid.UUID,
     status: Optional[OrderStatus] = None,
+    current_staff: StaffUser = Depends(get_current_staff),
     db: AsyncSession = Depends(get_db),
 ):
+    # Multi-tenant security check: ensure staff belongs to requested branch
+    user_role = current_staff.role.value if hasattr(current_staff.role, "value") else str(current_staff.role)
+    if user_role != "SYSTEM_ADMIN":
+        if current_staff.branch_id and current_staff.branch_id != branch_id:
+            raise HTTPException(403, "Access denied: unauthorized for this branch")
+
     cache_key = f"orders_board:{branch_id}:{status.value if status else 'all'}"
     cached = cache.get(cache_key)
     if cached is not None:
@@ -140,7 +147,11 @@ async def list_orders(
 
 
 @router.get("/{order_id}")
-async def get_order(order_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_order(
+    order_id: uuid.UUID,
+    current_staff: StaffUser = Depends(get_current_staff),
+    db: AsyncSession = Depends(get_db)
+):
     result = await db.execute(
         select(Order).where(Order.id == order_id)
         .options(
@@ -153,6 +164,14 @@ async def get_order(order_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     order = result.scalar_one_or_none()
     if not order:
         raise HTTPException(404, "Order not found")
+
+    user_role = current_staff.role.value if hasattr(current_staff.role, "value") else str(current_staff.role)
+    if user_role != "SYSTEM_ADMIN":
+        if current_staff.branch_id and order.branch_id != current_staff.branch_id:
+            raise HTTPException(403, "Access denied: unauthorized for this branch")
+        if current_staff.restaurant_id and order.restaurant_id != current_staff.restaurant_id:
+            raise HTTPException(403, "Access denied: unauthorized for this restaurant")
+
     return order
 
 

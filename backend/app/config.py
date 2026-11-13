@@ -1,7 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
+from pydantic import model_validator
 import os
+import secrets
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -9,12 +9,14 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
+    ENVIRONMENT: str = "development"
+
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://hellodine:hellodine_pass@localhost:5432/hellodine"
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # Security
-    SECRET_KEY: str = "change_me"
+    SECRET_KEY: str = ""
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     ALGORITHM: str = "HS256"
 
@@ -35,6 +37,20 @@ class Settings(BaseSettings):
     SAAS_OWNER_UPI_ID: str = "hellodine.saas@ybl"
     SAAS_OWNER_NAME: str = "HelloDine SaaS Platform"
 
+    @model_validator(mode="after")
+    def validate_secrets(self):
+        is_prod = self.ENVIRONMENT.lower() in ("production", "prod")
+        insecure_keys = {"change_me", "secret", "123456", "admin", "password"}
 
+        if not self.SECRET_KEY or self.SECRET_KEY in insecure_keys:
+            if is_prod:
+                raise ValueError("CRITICAL SECURITY ERROR: SECRET_KEY must be set to a secure, random string in production.")
+            # Auto-generate temporary development key if unset
+            self.SECRET_KEY = secrets.token_urlsafe(32)
+
+        if is_prod and len(self.SECRET_KEY) < 32:
+            raise ValueError("CRITICAL SECURITY ERROR: SECRET_KEY must be at least 32 characters in production.")
+
+        return self
 
 settings = Settings()
