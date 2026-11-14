@@ -42,15 +42,28 @@ async def checkout_guard(session_id: uuid.UUID, db: AsyncSession) -> tuple[Cart,
         raise CheckoutError("Cart is empty")
     t2 = time.perf_counter()
 
-    # Pick the cart that has items (or the latest one)
+    # Pick the cart that has items (or the latest one) and merge items from any duplicate open carts
     cart = next((c for c in open_carts if c.items), open_carts[0])
-    if not cart or not cart.items:
-        raise CheckoutError("Cart is empty")
-
-    # Clean up any duplicate open carts so they never conflict
+    existing_by_item = {ci.menu_item_id: ci for ci in cart.items}
+    merged_any = False
     for extra in open_carts:
         if extra.id != cart.id:
+            for extra_ci in list(extra.items):
+                if extra_ci.menu_item_id in existing_by_item:
+                    existing_by_item[extra_ci.menu_item_id].quantity += extra_ci.quantity
+                    await db.delete(extra_ci)
+                else:
+                    extra_ci.cart_id = cart.id
+                    cart.items.append(extra_ci)
+                    existing_by_item[extra_ci.menu_item_id] = extra_ci
+                merged_any = True
             extra.status = CartStatus.CHECKED_OUT
+    if merged_any:
+        await db.flush()
+        await recalculate_cart(cart, db)
+
+    if not cart or not cart.items:
+        raise CheckoutError("Cart is empty")
 
     items = cart.items
 

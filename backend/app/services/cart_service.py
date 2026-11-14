@@ -24,11 +24,20 @@ async def get_or_create_cart(session_id: uuid.UUID, db: AsyncSession) -> Cart:
     )
     carts = result.scalars().all()
     if carts:
-        # If there are duplicate open carts, pick the one with items or the newest
+        # Pick the primary open cart and consolidate items from any duplicate open carts into it
         cart = next((c for c in carts if c.items), carts[0])
+        existing_by_item = {ci.menu_item_id: ci for ci in cart.items}
         for extra in carts:
             if extra.id != cart.id:
+                for extra_ci in list(extra.items):
+                    if extra_ci.menu_item_id in existing_by_item:
+                        existing_by_item[extra_ci.menu_item_id].quantity += extra_ci.quantity
+                        await db.delete(extra_ci)
+                    else:
+                        extra_ci.cart_id = cart.id
+                        existing_by_item[extra_ci.menu_item_id] = extra_ci
                 extra.status = CartStatus.CHECKED_OUT
+        await db.flush()
         return cart
 
     cart = Cart(session_id=session_id)
@@ -100,7 +109,11 @@ async def add_item_to_cart(
             CartItem.notes == notes
         )
     )
-    cart_item = existing_result.scalar_one_or_none()
+    existing_items = existing_result.scalars().all()
+    cart_item = existing_items[0] if existing_items else None
+    for extra_ci in existing_items[1:]:
+        cart_item.quantity += extra_ci.quantity
+        await db.delete(extra_ci)
 
     if cart_item:
         cart_item.quantity += quantity

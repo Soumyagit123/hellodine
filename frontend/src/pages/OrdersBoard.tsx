@@ -75,11 +75,12 @@ function OrderCard({
         if (["NEW", "ACCEPTED", "PREPARING"].includes(order.status)) {
             canAdvance = true;
         } else if (order.status === "READY") {
-            helperMessage = "Waiting for Cashier / Server";
+            helperMessage = "On the way — Waiter confirms on Table Kiosk";
         }
     } else if (isCashierRole) {
         if (order.status === "READY") {
-            canAdvance = true;
+            canAdvance = false;
+            helperMessage = "Waiter confirms delivery on Table Kiosk";
         } else if (["NEW", "ACCEPTED", "PREPARING"].includes(order.status)) {
             helperMessage = "In Kitchen Prep";
         }

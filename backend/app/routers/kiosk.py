@@ -138,11 +138,31 @@ async def _serialize_session_state(session: TableSession, db: AsyncSession, incl
             }
             cache.set(f"static_menu:{session.branch_id}", cached_static, ttl_seconds=300)
 
-    # Open Cart (single JOIN query so we never loop over MenuItem)
+    # Open Cart: consolidate any duplicate open carts so all added items are always preserved
     cart_res = await db.execute(
-        select(Cart).where(Cart.session_id == session.id, Cart.status == CartStatus.OPEN)
+        select(Cart)
+        .where(Cart.session_id == session.id, Cart.status == CartStatus.OPEN)
+        .options(selectinload(Cart.items))
+        .order_by(Cart.updated_at.desc())
     )
-    cart = cart_res.scalars().first()
+    open_carts = cart_res.scalars().all()
+    cart = next((c for c in open_carts if c.items), open_carts[0]) if open_carts else None
+
+    if cart and len(open_carts) > 1:
+        existing_by_item = {ci.menu_item_id: ci for ci in cart.items}
+        for extra_c in open_carts:
+            if extra_c.id != cart.id:
+                for extra_ci in list(extra_c.items):
+                    if extra_ci.menu_item_id in existing_by_item:
+                        existing_by_item[extra_ci.menu_item_id].quantity += extra_ci.quantity
+                        await db.delete(extra_ci)
+                    else:
+                        extra_ci.cart_id = cart.id
+                        existing_by_item[extra_ci.menu_item_id] = extra_ci
+                extra_c.status = CartStatus.CHECKED_OUT
+        from app.services.cart_service import recalculate_cart
+        await recalculate_cart(cart, db)
+        await db.commit()
 
     cart_items_out = []
     if cart:
@@ -367,13 +387,9 @@ async def start_table_session(data: StartSessionRequest, db: AsyncSession = Depe
 
     if not should_start_new and clean_active_sessions:
         primary_session = clean_active_sessions[0]
-        placed_orders_res = await db.execute(
-            select(Order).where(Order.session_id == primary_session.id, Order.status.notin_([OrderStatus.CANCELLED]))
-        )
-        has_placed_orders = placed_orders_res.scalars().first() is not None
-
-        delta = now - (primary_session.last_message_at or now)
-        if (not has_placed_orders) or delta.total_seconds() > (2 * 3600):
+        last_active = primary_session.last_message_at or primary_session.started_at or now
+        delta = now - last_active
+        if delta.total_seconds() > (2 * 3600):
             should_start_new = True
 
     if should_start_new:
@@ -783,4 +799,76 @@ async def pay_bill_via_table_qr(session_id: uuid.UUID, data: TableQRPayRequest, 
         "upi_reference_id": ref_id,
         "goodbye_message": goodbye_msg,
     }
+
+
+@router.post("/orders/{order_id}/mark-delivered")
+async def mark_order_delivered_from_kiosk(order_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """
+    Waiter delivery confirmation on Table Kiosk:
+    Marks a READY order (and any other READY orders for the same table session) as SERVED,
+    synchronizes the consolidated GST bill, and broadcasts live updates to Kitchen, Cashier, and Table Kiosk.
+    """
+    result = await db.execute(select(Order).where(Order.id == order_id))
+    order = result.scalar_one_or_none()
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    # Mark this order and any other READY orders in the same session as SERVED
+    ready_orders_res = await db.execute(
+        select(Order).where(
+            Order.session_id == order.session_id,
+            Order.status == OrderStatus.READY,
+        )
+    )
+    ready_orders = list(ready_orders_res.scalars().all())
+    if order not in ready_orders and order.status != OrderStatus.CANCELLED:
+        ready_orders.append(order)
+
+    updated_orders = []
+    for o in ready_orders:
+        o.status = OrderStatus.SERVED
+        updated_orders.append(o)
+
+    await db.commit()
+
+    # Sync consolidated session bill so QR payment is up-to-date
+    try:
+        from app.services.billing_service import sync_session_bill
+        await sync_session_bill(order.session_id, db, commit=True)
+    except Exception as e:
+        print(f"Warning: bill sync after waiter mark-delivered failed: {e}")
+
+    cache.invalidate_prefix(f"orders_board:{order.branch_id}")
+    cache.invalidate_prefix(f"billing_tx:{order.branch_id}")
+    cache.invalidate_prefix(f"corp_dashboard:{order.branch_id}")
+    cache.invalidate_prefix(f"daily_report:{order.branch_id}")
+
+    # Broadcast to Kitchen / Cashier board and Table Kiosk for each updated order
+    for o in updated_orders:
+        payload = {
+            "event": "ORDER_STATUS_UPDATED",
+            "order_id": str(o.id),
+            "order_number": o.order_number,
+            "status": "SERVED",
+        }
+        try:
+            await manager.broadcast_to_branch(str(o.branch_id), payload)
+        except Exception:
+            pass
+        try:
+            await manager.broadcast_to_table(str(o.session_id), payload)
+        except Exception:
+            pass
+
+    sess_res = await db.execute(select(TableSession).where(TableSession.id == order.session_id))
+    session = sess_res.scalar_one()
+    state_snapshot = await _serialize_session_state(session, db, include_static_menu=False)
+
+    return {
+        "ok": True,
+        "status": "SERVED",
+        "updated_order_numbers": [o.order_number for o in updated_orders],
+        "state": state_snapshot,
+    }
+
 

@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import json
 import asyncio
 import logging
+import time
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -21,20 +22,33 @@ class KitchenConnectionManager:
         self.active_tables: Dict[str, List[WebSocket]] = {}
         self._redis_client = None
         self._pubsub_task: Optional[asyncio.Task] = None
+        self._redis_last_fail_ts: float = 0.0
 
     async def _init_redis(self):
         """Optionally connect to Redis Pub/Sub if REDIS_URL is configured."""
         if self._redis_client is not None or not settings.REDIS_URL:
             return
+        # Avoid blocking every WebSocket connect on DNS lookup if Redis is unavailable locally (retry at most once per 5 min)
+        now_ts = time.monotonic()
+        if self._redis_last_fail_ts > 0 and (now_ts - self._redis_last_fail_ts) < 300.0:
+            return
         try:
             import redis.asyncio as aioredis
-            client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+            client = aioredis.from_url(
+                settings.REDIS_URL,
+                decode_responses=True,
+                socket_connect_timeout=1.0,
+                socket_timeout=1.0,
+            )
             await client.ping()
             self._redis_client = client
+            self._redis_last_fail_ts = 0.0
             self._pubsub_task = asyncio.create_task(self._listen_redis())
             logger.info("KitchenConnectionManager connected to Redis Pub/Sub.")
         except Exception as e:
-            logger.warning(f"Redis not available for Pub/Sub ({e}). Falling back to local in-memory broadcasting.")
+            if self._redis_last_fail_ts == 0.0:
+                logger.warning(f"Redis not available for Pub/Sub ({e}). Falling back to local in-memory broadcasting.")
+            self._redis_last_fail_ts = now_ts
             self._redis_client = None
 
     async def _listen_redis(self):

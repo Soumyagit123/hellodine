@@ -157,7 +157,44 @@ export default function TableKiosk() {
     const [videoMode, setVideoMode] = useState<"youtube" | "mp4">("mp4");
     const [customVideoUrl, setCustomVideoUrl] = useState<string>("");
     const [jokeBanner, setJokeBanner] = useState<string | null>(null);
-    const [statusToast, setStatusToast] = useState<{ id: string; icon: string; title: string; message: string; color: string } | null>(null);
+    const [statusToast, setStatusToast] = useState<{
+        id: string;
+        icon: string;
+        title: string;
+        message: string;
+        color: string;
+        buttons?: { id: string; title: string }[];
+    } | null>(null);
+    const [aiPopupCard, setAiPopupCard] = useState<{
+        id: string;
+        title: string;
+        body: string;
+        buttons?: { id: string; title: string }[];
+    } | null>(null);
+    const [showAllCategoriesMenu, setShowAllCategoriesMenu] = useState<boolean>(false);
+    const [markingDelivered, setMarkingDelivered] = useState<boolean>(false);
+    const [showServedBillWidget, setShowServedBillWidget] = useState<boolean>(false);
+    const toastTimeoutRef = useRef<any>(null);
+
+    function triggerTopBannerToast(
+        icon: string,
+        title: string,
+        message: string,
+        color = "#23d18b",
+        durationMs = 5500,
+        buttons?: { id: string; title: string }[]
+    ) {
+        if (toastTimeoutRef.current) {
+            clearTimeout(toastTimeoutRef.current);
+        }
+        const id = `toast-${Date.now()}`;
+        setStatusToast({ id, icon, title, message, color, buttons });
+        if (durationMs > 0) {
+            toastTimeoutRef.current = setTimeout(() => {
+                setStatusToast((curr) => (curr && curr.id === id ? null : curr));
+            }, durationMs);
+        }
+    }
 
     const [showBirthdayPrompt, setShowBirthdayPrompt] = useState<boolean>(false);
     const [birthdayInputName, setBirthdayInputName] = useState<string>("");
@@ -452,7 +489,14 @@ export default function TableKiosk() {
         }
     }, [activeToken, selectedTableId]);
 
+    const startingSessionInFlightRef = useRef<boolean>(false);
+    const lastSessionLoadedAtRef = useRef<number>(0);
+
     async function startOrResumeSession(tok?: string, tblId?: string, forceNew = false) {
+        if (startingSessionInFlightRef.current && !forceNew) {
+            return;
+        }
+        startingSessionInFlightRef.current = true;
         setLoading(true);
         setError("");
         try {
@@ -461,6 +505,7 @@ export default function TableKiosk() {
             else if (tblId) payload.table_id = tblId;
 
             const res = await api.post("/kiosk/session/start", payload);
+            lastSessionLoadedAtRef.current = Date.now();
             setSessionData(res.data);
             if (res.data?.orders) {
                 seedOrderStatuses(res.data.orders);
@@ -470,6 +515,9 @@ export default function TableKiosk() {
             setShowOrderConfirmModal(false);
             setShowCartRemoveModal(false);
             setJokeBanner(null);
+            setAiPopupCard(null);
+            setShowServedBillWidget(false);
+            setShowAllCategoriesMenu(false);
 
             const newSessId = res.data?.session?.id || "";
             const existingCustName = res.data?.customer?.name || "";
@@ -518,6 +566,7 @@ export default function TableKiosk() {
         } catch (err: any) {
             setError(err.response?.data?.detail || "Could not start table session.");
         } finally {
+            startingSessionInFlightRef.current = false;
             setLoading(false);
         }
     }
@@ -539,6 +588,7 @@ export default function TableKiosk() {
     // Guard against background polling overwriting optimistic cart updates while an add/update API call is in flight
     const cartMutationCountRef = useRef<number>(0);
     const lastCartMutationTimeRef = useRef<number>(0);
+    const cartMutationChainRef = useRef<Promise<any>>(Promise.resolve());
 
     // Helper: Seed order statuses into ref tracking and mark them as already announced (used on session load/checkin)
     function seedOrderStatuses(ordersList: Order[]) {
@@ -597,51 +647,51 @@ export default function TableKiosk() {
                 text: `✅ *Kitchen Update*: Your order *#${orderNumber}* has been *ACCEPTED* by the kitchen!`,
                 voice: `Good news! The kitchen has accepted your order number ${orderNumber}.`,
                 icon: "✅",
-                title: "Order Accepted!",
-                color: "#10b981",
+                title: "Order Accepted by Kitchen!",
+                color: "#23d18b",
             },
             PREPARING: {
                 text: `👨‍🍳 *Kitchen Update*: Our chef is now freshly *PREPARING* your order *#${orderNumber}*!`,
-                voice: `Our chef is now preparing your order number ${orderNumber}.`,
+                voice: `Our chef is now freshly preparing your order number ${orderNumber}.`,
                 icon: "👨‍🍳",
-                title: "Order Preparing!",
+                title: "Chef is Preparing Your Food!",
                 color: "#f59e0b",
             },
             READY: {
-                text: `🔔 *Hot & Ready!*: Your order *#${orderNumber}* is *READY* to be served to your table!`,
-                voice: `Your order number ${orderNumber} is hot and ready to be served!`,
-                icon: "🔔",
-                title: "Hot & Ready to Serve!",
+                text: `🔔 *Order is on the way to your table!* Your order *#${orderNumber}* is hot and ready, and our waiter is bringing it to your table right now!`,
+                voice: `Great news! Your order number ${orderNumber} is ready and on the way to your table!`,
+                icon: "🛎️",
+                title: "Order is on the Way to Your Table!",
                 color: "#6366f1",
             },
             SERVED: {
-                text: `🍽️ *Order Served*: Your order *#${orderNumber}* has been *SERVED*. Enjoy your meal! 😋`,
-                voice: `Order number ${orderNumber} has been served. Enjoy your meal!`,
+                text: `🍽️ *Order Delivered & Served*: Your order *#${orderNumber}* has been served at your table. Enjoy your delicious meal! 😋`,
+                voice: `Order number ${orderNumber} has been served at your table. Enjoy your meal! Whenever you are ready, you can scan the QR code to pay your bill.`,
                 icon: "🍽️",
-                title: "Order Served!",
-                color: "#10b981",
+                title: "Order Delivered — Enjoy Your Meal!",
+                color: "#23d18b",
             },
             CANCELLED: {
                 text: `⚠️ *Order #${orderNumber}*: The item is not available or finished, please order other item, we are sorry for this.`,
                 voice: `Sorry, order number ${orderNumber} was cancelled because the item is not available or finished. Please order another item.`,
                 icon: "⚠️",
-                title: "Order Update",
+                title: "Order Cancelled / Item Unavailable",
                 color: "#ef4444",
             },
         };
         const info = statusLabels[newStatus];
         if (info) {
             appendBotMessage(info.text, [{ id: "order_status", title: "👨‍🍳 Check Order Status" }], true, info.voice);
-            setStatusToast({
-                id: `toast-${Date.now()}`,
-                icon: info.icon,
-                title: `${info.title} (#${orderNumber})`,
-                message: info.voice,
-                color: info.color,
-            });
-            setTimeout(() => {
-                setStatusToast((curr) => (curr && curr.title.includes(orderNumber) ? null : curr));
-            }, 6000);
+            triggerTopBannerToast(
+                info.icon,
+                `${info.title} — Order #${orderNumber}`,
+                info.voice,
+                info.color,
+                6500
+            );
+            if (newStatus === "SERVED") {
+                setShowServedBillWidget(true);
+            }
         }
     }
 
@@ -701,6 +751,7 @@ export default function TableKiosk() {
         let isUnmounted = false;
         let reconnectTimeout: any = null;
         let tableWs: WebSocket | null = null;
+        let hasConnectedOnce = false;
         const wsUrl = `${WS_BASE_URL}/orders/ws/table/${sessionId}`;
 
         function connectTableWs() {
@@ -709,7 +760,11 @@ export default function TableKiosk() {
             tableWs = ws;
 
             ws.onopen = () => {
-                refreshSessionState(sessionId);
+                // Only refresh on reconnects or if initial load was >3s ago, avoiding redundant GET right after /session/start
+                if (hasConnectedOnce || Date.now() - lastSessionLoadedAtRef.current > 3000) {
+                    refreshSessionState(sessionId);
+                }
+                hasConnectedOnce = true;
             };
 
             ws.onmessage = (event) => {
@@ -734,24 +789,21 @@ export default function TableKiosk() {
                             },
                         ]);
                         speakText(`Sorry, ${itemName} in order number ${ordNum} is not available or finished. Please order another item.`);
-                        setStatusToast({
-                            id: `toast-${Date.now()}`,
-                            icon: "⚠️",
-                            title: `Item Unavailable (#${ordNum})`,
-                            message: `"${itemName}" is not available or finished. Please order another item.`,
-                            color: "#ef4444",
-                        });
-                        setTimeout(() => {
-                            setStatusToast((curr) => (curr && curr.title.includes(ordNum) ? null : curr));
-                        }, 7000);
+                        triggerTopBannerToast(
+                            "⚠️",
+                            `Item Unavailable — Order #${ordNum}`,
+                            `"${itemName}" is not available or finished. Please order another item.`,
+                            "#ef4444",
+                            7000
+                        );
                         refreshSessionState(sessionId);
                     } else if (data.event === "SESSION_PAID_AND_EXPIRED") {
                         triggerGoodbyeFlow(
                             data.bill_number || "PAID",
                             Number(data.amount || 0),
-                            0,
-                            0,
-                            0,
+                            Number(data.subtotal || 0),
+                            Number(data.cgst_amount || 0),
+                            Number(data.sgst_amount || 0),
                             data.message || "Thank you for dining with us! Your payment is complete."
                         );
                     }
@@ -823,6 +875,9 @@ export default function TableKiosk() {
         setShowBillModal(false);
         setShowOrderConfirmModal(false);
         setShowCartRemoveModal(false);
+        setAiPopupCard(null);
+        setShowServedBillWidget(false);
+        setShowAllCategoriesMenu(false);
         // Immediately clear check-in session storage & customer name so previous guest name NEVER leaks to next customer
         sessionStorage.removeItem("hd_kiosk_checkedin_session");
         setCheckedInSessionId("");
@@ -974,7 +1029,17 @@ export default function TableKiosk() {
 
         // Instant Fast Path for Order Confirmation: 0ms delay directly triggers kitchen dispatch
         const norm = messageText.toLowerCase();
-        if (norm === "do_confirm" || norm === "confirm_order" || norm === "confirm order" || norm === "confirm") {
+        if (
+            norm === "do_confirm" ||
+            norm === "confirm_order" ||
+            norm === "confirm order" ||
+            norm === "confirm" ||
+            norm === "place order" ||
+            norm === "place my order" ||
+            norm === "place the order" ||
+            norm === "send to kitchen" ||
+            norm === "send order to kitchen"
+        ) {
             try {
                 await handleConfirmSendToKitchen();
             } finally {
@@ -997,6 +1062,13 @@ export default function TableKiosk() {
         setBotThinking(true);
 
         try {
+            // Wait for any in-flight optimistic cart mutations (+ ADD / quantity changes) to finish saving in DB first
+            // so the AI bot sees 100% of added items and never gets blocked by cartBusy!
+            if (cartMutationCountRef.current > 0) {
+                try {
+                    await cartMutationChainRef.current;
+                } catch {}
+            }
             const chatStartedAt = Date.now();
             const res = await api.post("/kiosk/chat", {
                 session_id: sessionData.session.id,
@@ -1004,10 +1076,20 @@ export default function TableKiosk() {
             });
 
             if (res.data.state) {
+                const isOrderPlaced =
+                    res.data.ui_action?.action === "ORDER_PLACED" ||
+                    res.data.intent === "PLACE_ORDER" ||
+                    res.data.intent === "CONFIRM";
+                if (isOrderPlaced) {
+                    cartMutationCountRef.current = 0;
+                    lastCartMutationTimeRef.current = 0;
+                    setShowOrderConfirmModal(false);
+                }
                 setSessionData((prev: any) => {
                     if (!prev) return res.data.state;
                     const cartBusy =
-                        cartMutationCountRef.current > 0 || lastCartMutationTimeRef.current > chatStartedAt;
+                        !isOrderPlaced &&
+                        (cartMutationCountRef.current > 0 || lastCartMutationTimeRef.current > chatStartedAt);
                     return {
                         ...prev,
                         ...res.data.state,
@@ -1015,13 +1097,18 @@ export default function TableKiosk() {
                         branch: res.data.state.branch || prev.branch,
                         categories: res.data.state.categories || prev.categories,
                         menu_items: res.data.state.menu_items || prev.menu_items,
-                        cart: cartBusy ? prev.cart : res.data.state.cart,
+                        cart: isOrderPlaced
+                            ? { id: null, subtotal: 0, cgst_amount: 0, sgst_amount: 0, total: 0, items: [] }
+                            : cartBusy
+                            ? prev.cart
+                            : res.data.state.cart,
                     };
                 });
             }
 
             const reply = res.data.reply;
             const uiAction = res.data.ui_action;
+            const intentName = res.data.intent || "";
             const resLang = (res.data.language || "en") as "en" | "hi" | "or";
 
             // Requirement 9: If showing bill/invoice, do NOT read all line items aloud — only speak short prompt
@@ -1038,6 +1125,68 @@ export default function TableKiosk() {
 
             if (reply?.body) {
                 appendBotMessage(reply.body, reply.buttons, shouldSpeakReply, voiceOverride, resLang);
+
+                // Show relevant bot response on the main screen via Top Toast Banner and/or AI Popup Card
+                const cleanPlainBody = reply.body.replace(/[*_`~]/g, "").trim();
+                const shortToastMsg = voiceOverride || cleanPlainBody.split("\n")[0] || cleanPlainBody;
+
+                if (intentName === "ADD_ITEM" || intentName === "AI_PICK_AND_ADD" || intentName === "UPDATE_QTY" || intentName === "REMOVE_ITEM" || intentName === "CLEAR_CART") {
+                    triggerTopBannerToast(
+                        "🛒",
+                        intentName === "REMOVE_ITEM" || intentName === "CLEAR_CART" ? "Cart Updated" : "Added to Cart!",
+                        shortToastMsg,
+                        "#23d18b",
+                        6000,
+                        reply.buttons
+                    );
+                    setAiPopupCard({
+                        id: `ai-${Date.now()}`,
+                        title: "🛒 AI Waiter — Cart Update",
+                        body: cleanPlainBody,
+                        buttons: reply.buttons,
+                    });
+                } else if (intentName === "CART_VIEW" || intentName === "ORDER_STATUS" || intentName === "CANCEL_ORDER") {
+                    triggerTopBannerToast(
+                        "📋",
+                        intentName === "ORDER_STATUS" ? "Live Kitchen Order Status" : "Your Cart Summary",
+                        shortToastMsg,
+                        "#54a0ff",
+                        6000
+                    );
+                    setAiPopupCard({
+                        id: `ai-${Date.now()}`,
+                        title: intentName === "ORDER_STATUS" ? "👨‍🍳 Live Order Status" : "🛒 Your Cart Details",
+                        body: cleanPlainBody,
+                        buttons: reply.buttons,
+                    });
+                } else if (intentName === "RECOMMEND_BEST" || intentName === "BROWSE") {
+                    triggerTopBannerToast(
+                        "⭐",
+                        intentName === "RECOMMEND_BEST" ? "Chef's Top Recommendations" : "Menu Filtered for You",
+                        shortToastMsg,
+                        "#f9ca24",
+                        6000
+                    );
+                    if (intentName === "RECOMMEND_BEST") {
+                        setAiPopupCard({
+                            id: `ai-${Date.now()}`,
+                            title: "👨‍🍳 Chef's Top Recommendations",
+                            body: cleanPlainBody,
+                            buttons: reply.buttons,
+                        });
+                    }
+                } else if (uiAction?.action === "SHOW_JOKE" && uiAction.joke) {
+                    setJokeBanner(uiAction.joke);
+                    triggerTopBannerToast("😂", "AI Waiter Joke!", uiAction.joke, "#f9ca24", 7500);
+                } else if (uiAction?.action !== "SHOW_CARTOONS" && uiAction?.action !== "SHOW_BIRTHDAY" && uiAction?.action !== "SHOW_BILL") {
+                    triggerTopBannerToast("🤖", "AI Waiter Response", shortToastMsg, "#ff6b35", 6500, reply.buttons);
+                    setAiPopupCard({
+                        id: `ai-${Date.now()}`,
+                        title: "🤖 HelloDine AI Waiter",
+                        body: cleanPlainBody,
+                        buttons: reply.buttons,
+                    });
+                }
             }
 
             if (uiAction?.action === "SHOW_CARTOONS") {
@@ -1231,7 +1380,7 @@ export default function TableKiosk() {
     }
 
     // ─── LEFT SIDE: INSTANT OPTIMISTIC CART UPDATES (No AI delay, No Voice) ───
-    function recalculateOptimisticCart(items: CartItem[]) {
+    function recalculateOptimisticCart(items: CartItem[], baseCart?: any) {
         let subtotal = 0;
         let cgst = 0;
         let sgst = 0;
@@ -1245,7 +1394,7 @@ export default function TableKiosk() {
         });
         const total = Math.round((subtotal + cgst + sgst) * 100) / 100;
         return {
-            ...sessionData.cart,
+            ...(baseCart || sessionData?.cart || {}),
             items,
             subtotal: Math.round(subtotal * 100) / 100,
             cgst_amount: Math.round(cgst * 100) / 100,
@@ -1256,6 +1405,7 @@ export default function TableKiosk() {
 
     async function handleAddItem(item: MenuItem) {
         if (!sessionData?.session?.id) return;
+        const sessId = sessionData.session.id;
 
         cartMutationCountRef.current += 1;
         lastCartMutationTimeRef.current = Date.now();
@@ -1284,30 +1434,42 @@ export default function TableKiosk() {
             }
             return {
                 ...prev,
-                cart: recalculateOptimisticCart(currentItems),
+                cart: recalculateOptimisticCart(currentItems, prev.cart),
             };
         });
+        triggerTopBannerToast(
+            "🛒",
+            `Added ${item.name} to Cart`,
+            `₹${Number(item.base_price).toFixed(0)} · Tap Place Order when ready or speak to AI Waiter below!`,
+            "#23d18b",
+            3200
+        );
 
-        // 2. Sync to DB in background — /api/cart/add now returns the full updated cart directly (no 2nd GET call!)
-        try {
-            const res = await api.post("/cart/add", {
-                session_id: sessionData.session.id,
-                menu_item_id: item.id,
-                quantity: 1,
-            });
-            lastCartMutationTimeRef.current = Date.now();
-            if (res.data?.cart && cartMutationCountRef.current <= 1) {
-                setSessionData((prev: any) => (prev ? { ...prev, cart: res.data.cart } : prev));
+        // 2. Sync to DB in sequential queue so two rapid adds across categories never race on the backend
+        const task = cartMutationChainRef.current.then(async () => {
+            try {
+                const res = await api.post("/cart/add", {
+                    session_id: sessId,
+                    menu_item_id: item.id,
+                    quantity: 1,
+                });
+                lastCartMutationTimeRef.current = Date.now();
+                if (res.data?.cart && cartMutationCountRef.current <= 1) {
+                    setSessionData((prev: any) => (prev ? { ...prev, cart: res.data.cart } : prev));
+                }
+            } catch {
+                refreshSessionState(undefined, true);
+            } finally {
+                cartMutationCountRef.current = Math.max(0, cartMutationCountRef.current - 1);
             }
-        } catch {
-            refreshSessionState(undefined, true);
-        } finally {
-            cartMutationCountRef.current = Math.max(0, cartMutationCountRef.current - 1);
-        }
+        });
+        cartMutationChainRef.current = task.catch(() => {});
+        await task;
     }
 
     async function handleUpdateCartQty(cartItem: CartItem, newQty: number) {
         if (!sessionData?.session?.id) return;
+        const sessId = sessionData.session.id;
 
         cartMutationCountRef.current += 1;
         lastCartMutationTimeRef.current = Date.now();
@@ -1325,44 +1487,47 @@ export default function TableKiosk() {
             }
             return {
                 ...prev,
-                cart: recalculateOptimisticCart(currentItems),
+                cart: recalculateOptimisticCart(currentItems, prev.cart),
             };
         });
 
-        // 2. Sync to DB in background
-        try {
-            if (String(cartItem.id).startsWith("temp-")) {
-                // If user tapped +/- while initial /cart/add was still saving, use /cart/add with delta
-                const delta = newQty - cartItem.quantity;
-                if (delta > 0) {
-                    const res = await api.post("/cart/add", {
-                        session_id: sessionData.session.id,
-                        menu_item_id: cartItem.menu_item_id,
-                        quantity: delta,
-                    });
-                    if (res.data?.cart && cartMutationCountRef.current <= 1) {
-                        setSessionData((prev: any) => (prev ? { ...prev, cart: res.data.cart } : prev));
+        // 2. Sync to DB in sequential queue
+        const task = cartMutationChainRef.current.then(async () => {
+            try {
+                if (String(cartItem.id).startsWith("temp-")) {
+                    const delta = newQty - cartItem.quantity;
+                    if (delta > 0) {
+                        const res = await api.post("/cart/add", {
+                            session_id: sessId,
+                            menu_item_id: cartItem.menu_item_id,
+                            quantity: delta,
+                        });
+                        if (res.data?.cart && cartMutationCountRef.current <= 1) {
+                            setSessionData((prev: any) => (prev ? { ...prev, cart: res.data.cart } : prev));
+                        }
+                    } else {
+                        await refreshSessionState(undefined, true);
                     }
-                } else {
-                    await refreshSessionState(undefined, true);
+                    return;
                 }
-                return;
+                let res;
+                if (newQty <= 0) {
+                    res = await api.delete(`/cart/item/${cartItem.id}`);
+                } else {
+                    res = await api.patch(`/cart/item/${cartItem.id}/quantity`, { quantity: newQty });
+                }
+                lastCartMutationTimeRef.current = Date.now();
+                if (res.data?.cart && cartMutationCountRef.current <= 1) {
+                    setSessionData((prev: any) => (prev ? { ...prev, cart: res.data.cart } : prev));
+                }
+            } catch {
+                refreshSessionState(undefined, true);
+            } finally {
+                cartMutationCountRef.current = Math.max(0, cartMutationCountRef.current - 1);
             }
-            let res;
-            if (newQty <= 0) {
-                res = await api.delete(`/cart/item/${cartItem.id}`);
-            } else {
-                res = await api.patch(`/cart/item/${cartItem.id}/quantity`, { quantity: newQty });
-            }
-            lastCartMutationTimeRef.current = Date.now();
-            if (res.data?.cart && cartMutationCountRef.current <= 1) {
-                setSessionData((prev: any) => (prev ? { ...prev, cart: res.data.cart } : prev));
-            }
-        } catch {
-            refreshSessionState(undefined, true);
-        } finally {
-            cartMutationCountRef.current = Math.max(0, cartMutationCountRef.current - 1);
-        }
+        });
+        cartMutationChainRef.current = task.catch(() => {});
+        await task;
     }
 
     // Remove a single item completely from the cart with zero flicker
@@ -1382,30 +1547,35 @@ export default function TableKiosk() {
             }
             return {
                 ...prev,
-                cart: recalculateOptimisticCart(currentItems),
+                cart: recalculateOptimisticCart(currentItems, prev.cart),
             };
         });
 
-        try {
-            if (!String(cartItem.id).startsWith("temp-")) {
-                const res = await api.delete(`/cart/item/${cartItem.id}`);
-                lastCartMutationTimeRef.current = Date.now();
-                if (res.data?.cart && cartMutationCountRef.current <= 1) {
-                    setSessionData((prev: any) => (prev ? { ...prev, cart: res.data.cart } : prev));
+        const task = cartMutationChainRef.current.then(async () => {
+            try {
+                if (!String(cartItem.id).startsWith("temp-")) {
+                    const res = await api.delete(`/cart/item/${cartItem.id}`);
+                    lastCartMutationTimeRef.current = Date.now();
+                    if (res.data?.cart && cartMutationCountRef.current <= 1) {
+                        setSessionData((prev: any) => (prev ? { ...prev, cart: res.data.cart } : prev));
+                    }
+                } else {
+                    await refreshSessionState(undefined, true);
                 }
-            } else {
-                await refreshSessionState(undefined, true);
+            } catch {
+                refreshSessionState(undefined, true);
+            } finally {
+                cartMutationCountRef.current = Math.max(0, cartMutationCountRef.current - 1);
             }
-        } catch {
-            refreshSessionState(undefined, true);
-        } finally {
-            cartMutationCountRef.current = Math.max(0, cartMutationCountRef.current - 1);
-        }
+        });
+        cartMutationChainRef.current = task.catch(() => {});
+        await task;
     }
 
     // Clear all items in the cart atomically in 1 backend SQL DELETE with zero flicker
     async function handleClearAllCartItems() {
         if (!sessionData?.session?.id) return;
+        const sessId = sessionData.session.id;
 
         cartMutationCountRef.current += 1;
         lastCartMutationTimeRef.current = Date.now();
@@ -1420,17 +1590,21 @@ export default function TableKiosk() {
                 : prev
         );
 
-        try {
-            const res = await api.delete(`/cart/${sessionData.session.id}/clear`);
-            lastCartMutationTimeRef.current = Date.now();
-            if (res.data?.cart && cartMutationCountRef.current <= 1) {
-                setSessionData((prev: any) => (prev ? { ...prev, cart: res.data.cart } : prev));
+        const task = cartMutationChainRef.current.then(async () => {
+            try {
+                const res = await api.delete(`/cart/${sessId}/clear`);
+                lastCartMutationTimeRef.current = Date.now();
+                if (res.data?.cart && cartMutationCountRef.current <= 1) {
+                    setSessionData((prev: any) => (prev ? { ...prev, cart: res.data.cart } : prev));
+                }
+            } catch {
+                refreshSessionState(undefined, true);
+            } finally {
+                cartMutationCountRef.current = Math.max(0, cartMutationCountRef.current - 1);
             }
-        } catch {
-            refreshSessionState(undefined, true);
-        } finally {
-            cartMutationCountRef.current = Math.max(0, cartMutationCountRef.current - 1);
-        }
+        });
+        cartMutationChainRef.current = task.catch(() => {});
+        await task;
     }
 
     // Requirement 8: Clicking "Place Order to Kitchen" on Left Side opens Order Summary & AI speaks for confirmation
@@ -1457,9 +1631,21 @@ export default function TableKiosk() {
 
         setPlacingOrder(true);
         try {
+            // Wait for any in-flight optimistic cart mutations (+ ADD / quantity changes) to finish saving in DB first
+            // so the backend order includes 100% of items added by the customer!
+            if (cartMutationCountRef.current > 0) {
+                try {
+                    await cartMutationChainRef.current;
+                } catch {}
+            }
+
             const res = await api.post("/orders/place", {
                 session_id: sessionData.session.id,
             });
+
+            // Reset cart mutation locks and explicitly clear the cart so placed items NEVER linger in the cart!
+            cartMutationCountRef.current = 0;
+            lastCartMutationTimeRef.current = 0;
 
             // Update session data directly from backend response (no extra GET request needed!)
             if (res.data.state) {
@@ -1470,7 +1656,17 @@ export default function TableKiosk() {
                     branch: res.data.state.branch || prev?.branch,
                     categories: res.data.state.categories || prev?.categories,
                     menu_items: res.data.state.menu_items || prev?.menu_items,
+                    cart: { id: null, subtotal: 0, cgst_amount: 0, sgst_amount: 0, total: 0, items: [] },
                 }));
+            } else {
+                setSessionData((prev: any) =>
+                    prev
+                        ? {
+                              ...prev,
+                              cart: { id: null, subtotal: 0, cgst_amount: 0, sgst_amount: 0, total: 0, items: [] },
+                          }
+                        : prev
+                );
             }
 
             // Immediately track the newly created order at status NEW so subsequent status updates (ACCEPTED, etc.)
@@ -1485,6 +1681,7 @@ export default function TableKiosk() {
 
             // Close confirmation modal
             setShowOrderConfirmModal(false);
+            setAiPopupCard(null);
 
             const orderNum = res.data.order_number;
             appendBotMessage(
@@ -1496,10 +1693,62 @@ export default function TableKiosk() {
                 true,
                 `Order ${orderNum} is confirmed and sent to the kitchen!`
             );
+            triggerTopBannerToast(
+                "✅",
+                `Order #${orderNum} Sent to Kitchen!`,
+                "Our chef has received your ticket. Sit back and enjoy cartoons or a joke while we prepare your food!",
+                "#23d18b",
+                6500,
+                [
+                    { id: "tell_joke", title: "😂 Hear a Joke" },
+                    { id: "show_cartoons", title: "🎬 Kids Cartoons" },
+                ]
+            );
         } catch (err: any) {
             alert(err.response?.data?.detail || "Could not place order. Please try again.");
         } finally {
             setPlacingOrder(false);
+        }
+    }
+
+    async function handleWaiterMarkDelivered(orderId: string) {
+        if (!orderId || markingDelivered) return;
+        setMarkingDelivered(true);
+        try {
+            const res = await api.post(`/kiosk/orders/${orderId}/mark-delivered`);
+            // Seed all updated SERVED orders into announcedStatusKeysRef immediately so the WebSocket broadcast
+            // (ORDER_STATUS_UPDATED -> SERVED) does NOT speak a second duplicate announcement!
+            if (res.data?.state?.orders) {
+                seedOrderStatuses(res.data.state.orders);
+            } else {
+                lastOrderStatusMapRef.current[orderId] = "SERVED";
+                announcedStatusKeysRef.current.add(`${orderId}:SERVED`);
+            }
+            if (res.data?.state) {
+                setSessionData((prev: any) => ({
+                    ...prev,
+                    ...res.data.state,
+                    restaurant: res.data.state.restaurant || prev?.restaurant,
+                    branch: res.data.state.branch || prev?.branch,
+                    categories: res.data.state.categories || prev?.categories,
+                    menu_items: res.data.state.menu_items || prev?.menu_items,
+                }));
+            }
+            const updatedNums = (res.data?.updated_order_numbers || []).join(", #");
+            const label = updatedNums ? `Order #${updatedNums}` : "Your Order";
+            speakText(`${label} has been delivered and served at your table. Enjoy your delicious meal! You can scan the QR code whenever you are ready to pay.`);
+            triggerTopBannerToast(
+                "🍽️",
+                `${label} Served — Enjoy Your Meal!`,
+                "Your GST Bill & UPI QR Code are ready on screen for easy payment whenever you finish.",
+                "#23d18b",
+                7000
+            );
+            setShowServedBillWidget(true);
+        } catch (err: any) {
+            alert(err.response?.data?.detail || "Could not mark order as delivered.");
+        } finally {
+            setMarkingDelivered(false);
         }
     }
 
@@ -2120,19 +2369,145 @@ export default function TableKiosk() {
         );
     }
 
+    const readyOrders = activeOrders.filter((o) => o.status === "READY");
+    const servedOrders = activeOrders.filter((o) => o.status === "SERVED");
+    const hasServedOrder = servedOrders.length > 0 && readyOrders.length === 0;
+    const mainCategories = categories.slice(0, 4);
+    const activeExtraCategory =
+        selectedCategory !== "ALL" && !mainCategories.some((c) => c.id === selectedCategory)
+            ? categories.find((c) => c.id === selectedCategory)
+            : null;
+    const isBusyWithEntertainment = showCartoonModal || Boolean(jokeBanner);
+
+    function getCategoryIcon(catName: string): string {
+        const n = (catName || "").toLowerCase();
+        if (n.includes("starter") || n.includes("appetizer") || n.includes("snack") || n.includes("chaat")) return "🍢";
+        if (n.includes("soup")) return "🥣";
+        if (n.includes("salad") || n.includes("healthy") || n.includes("raita")) return "🥗";
+        if (n.includes("tandoor") || n.includes("kebab") || n.includes("tikka") || n.includes("grill")) return "🔥";
+        if (n.includes("biryani") || n.includes("rice") || n.includes("pulao")) return "🍛";
+        if (n.includes("bread") || n.includes("roti") || n.includes("naan") || n.includes("paratha")) return "🫓";
+        if (n.includes("main") || n.includes("curry") || n.includes("gravy") || n.includes("paneer") || n.includes("masala") || n.includes("dal")) return "🍲";
+        if (n.includes("chinese") || n.includes("noodle") || n.includes("manchurian") || n.includes("momos") || n.includes("wok")) return "🍜";
+        if (n.includes("pizza") || n.includes("pasta") || n.includes("italian")) return "🍕";
+        if (n.includes("burger") || n.includes("sandwich") || n.includes("wrap") || n.includes("roll")) return "🍔";
+        if (n.includes("south") || n.includes("dosa") || n.includes("idli")) return "🥞";
+        if (n.includes("thali") || n.includes("combo") || n.includes("meal")) return "🍱";
+        if (n.includes("seafood") || n.includes("fish") || n.includes("prawn")) return "🦐";
+        if (n.includes("chicken") || n.includes("mutton") || n.includes("non-veg") || n.includes("meat")) return "🍗";
+        if (n.includes("dessert") || n.includes("sweet") || n.includes("ice cream") || n.includes("cake") || n.includes("gulab")) return "🍨";
+        if (n.includes("drink") || n.includes("beverage") || n.includes("juice") || n.includes("shake") || n.includes("mocktail") || n.includes("soda") || n.includes("lassi")) return "🥤";
+        if (n.includes("tea") || n.includes("coffee") || n.includes("chai") || n.includes("hot")) return "☕";
+        if (n.includes("breakfast")) return "🍳";
+        return "🍽️";
+    }
+
     return (
         <div
             style={{
-                display: "grid",
-                gridTemplateColumns: "70% 30%",
+                display: "flex",
+                flexDirection: "column",
                 height: "100vh",
                 width: "100vw",
                 overflow: "hidden",
                 background: "#0b0d14",
+                position: "relative",
             }}
         >
             {/* ═══════════════════════════════════════════════════════════════════════
-                LEFT PANEL (70%): MODERN FOOD APP VISUAL MENU & DIRECT CONTROLS
+                TOP BANNER TOAST FOR EVERY STEP UPDATE (Solid Opaque Background & Larger Tablet View)
+               ═══════════════════════════════════════════════════════════════════════ */}
+            {statusToast && (
+                <div
+                    style={{
+                        position: "fixed",
+                        top: 14,
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        zIndex: 10025,
+                        width: "min(96vw, 1020px)",
+                        background:
+                            statusToast.color === "#23d18b"
+                                ? "linear-gradient(90deg, #0c3b2e 0%, #111827 70%)"
+                                : statusToast.color === "#ef4444"
+                                ? "linear-gradient(90deg, #4c111b 0%, #111827 70%)"
+                                : "linear-gradient(90deg, #3b1d11 0%, #111827 70%)",
+                        border: `2.5px solid ${statusToast.color}`,
+                        borderRadius: 16,
+                        padding: "18px 26px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 18,
+                        boxShadow: "0 20px 55px rgba(0,0,0,0.92), 0 0 32px rgba(35,209,139,0.28)",
+                    }}
+                >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                            style={{
+                                fontWeight: 900,
+                                fontSize: "1.24rem",
+                                color: statusToast.color,
+                                marginBottom: 6,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 10,
+                            }}
+                        >
+                            <span style={{ fontSize: "1.35rem" }}>{statusToast.icon}</span>
+                            <span>{statusToast.title}</span>
+                        </div>
+                        <div style={{ fontSize: "1rem", fontWeight: 600, color: "#f1f5f9", lineHeight: 1.45 }}>
+                            {statusToast.message}
+                        </div>
+                        {statusToast.buttons && statusToast.buttons.length > 0 && (
+                            <div className="flex gap-2" style={{ marginTop: 10, flexWrap: "wrap" }}>
+                                {statusToast.buttons
+                                    .filter((b) => !(b.id === "cancel_order" && !hasCancellableOrder))
+                                    .map((b) => (
+                                        <button
+                                            key={b.id}
+                                            type="button"
+                                            className="btn btn-sm"
+                                            style={{
+                                                background: "#1e293b",
+                                                border: `1.5px solid ${statusToast.color}`,
+                                                color: "#fff",
+                                                padding: "6px 14px",
+                                                borderRadius: 999,
+                                                fontSize: "0.85rem",
+                                                fontWeight: 800,
+                                            }}
+                                            onClick={() => sendChatMessage(b.id, b.title, true)}
+                                        >
+                                            {b.title}
+                                        </button>
+                                    ))}
+                            </div>
+                        )}
+                    </div>
+                    <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        style={{
+                            background: "#1e293b",
+                            borderRadius: 10,
+                            padding: "8px 16px",
+                            borderColor: "rgba(255,255,255,0.3)",
+                            color: "#f8fafc",
+                            fontWeight: 700,
+                            fontSize: "0.86rem",
+                            flexShrink: 0,
+                        }}
+                        onClick={() => setStatusToast(null)}
+                    >
+                        Dismiss
+                    </button>
+                </div>
+            )}
+
+            {/* ═══════════════════════════════════════════════════════════════════════
+                FULL-WIDTH (100%) TABLET-FRIENDLY MENU & CUSTOMER EXPERIENCE SCREEN
                ═══════════════════════════════════════════════════════════════════════ */}
             <div
                 style={{
@@ -2142,13 +2517,12 @@ export default function TableKiosk() {
                     flexDirection: "column",
                     height: "100vh",
                     overflow: "hidden",
-                    borderRight: "1px solid var(--border)",
                 }}
             >
                 {/* TOP HEADER */}
                 <header
                     style={{
-                        padding: "14px 24px",
+                        padding: "12px 24px",
                         background: "linear-gradient(90deg, #151828 0%, #1d1936 100%)",
                         borderBottom: "1px solid rgba(255,255,255,0.08)",
                         display: "flex",
@@ -2182,25 +2556,25 @@ export default function TableKiosk() {
                         </div>
                     </div>
 
-                    {/* ENTERTAINMENT & INVOICE BUTTONS */}
-                    <div className="flex gap-2" style={{ flexWrap: "wrap" }}>
+                    {/* ENTERTAINMENT, LANGUAGE, VOICE & INVOICE BUTTONS */}
+                    <div className="flex gap-2 items-center" style={{ flexWrap: "wrap" }}>
                         <button
                             className="btn btn-outline btn-sm"
-                            style={{ borderColor: "#f9ca24", color: "#f9ca24" }}
+                            style={{ borderColor: "#f9ca24", color: "#f9ca24", fontWeight: 700 }}
                             onClick={() => sendChatMessage("tell_joke", "😂 Tell me a Joke", true)}
                         >
                             😂 Joke
                         </button>
                         <button
                             className="btn btn-outline btn-sm"
-                            style={{ borderColor: "#54a0ff", color: "#54a0ff" }}
+                            style={{ borderColor: "#54a0ff", color: "#54a0ff", fontWeight: 700 }}
                             onClick={() => setShowCartoonModal(true)}
                         >
                             🎬 Kids Cartoons
                         </button>
                         <button
                             className="btn btn-outline btn-sm"
-                            style={{ borderColor: "#ff9f43", color: "#ff9f43" }}
+                            style={{ borderColor: "#ff9f43", color: "#ff9f43", fontWeight: 700 }}
                             onClick={() => setShowBirthdayPrompt(true)}
                         >
                             🎂 Birthday
@@ -2214,6 +2588,39 @@ export default function TableKiosk() {
                                 🧾 GST Bill & QR Pay (₹{ordersGrandTotal.toFixed(2)})
                             </button>
                         )}
+                        {/* Language Selector */}
+                        <select
+                            className="input"
+                            style={{
+                                width: "auto",
+                                padding: "6px 10px",
+                                fontSize: "0.78rem",
+                                borderRadius: 10,
+                                background: "#1c2035",
+                                borderColor: "var(--border)",
+                                color: "#fff",
+                                cursor: "pointer",
+                            }}
+                            value={kioskLanguage}
+                            onChange={(e) => setKioskLanguage(e.target.value as any)}
+                            title="Select AI Voice Language"
+                        >
+                            <option value="auto">🌐 Auto Lang</option>
+                            <option value="en">🇬🇧 English</option>
+                            <option value="hi">🇮🇳 हिन्दी</option>
+                            <option value="or">🇮🇳 ଓଡ଼ିଆ</option>
+                        </select>
+                        <button
+                            type="button"
+                            className={`btn btn-sm ${voiceEnabled ? "btn-primary" : "btn-outline"}`}
+                            onClick={() => {
+                                if (voiceEnabled && "speechSynthesis" in window) window.speechSynthesis.cancel();
+                                setVoiceEnabled(!voiceEnabled);
+                            }}
+                            title="Toggle AI Voice Output"
+                        >
+                            {voiceEnabled ? "🔊 AI Voice On" : "🔇 Muted"}
+                        </button>
                         {/* Admin Tablet Reset / Unbind Trigger */}
                         <button
                             type="button"
@@ -2235,7 +2642,7 @@ export default function TableKiosk() {
                 {activeOrders.length > 0 && (
                     <div
                         style={{
-                            padding: "10px 24px",
+                            padding: "8px 24px",
                             background: "linear-gradient(90deg, rgba(255,107,53,0.14), rgba(35,209,139,0.12))",
                             borderBottom: "1px solid var(--border)",
                             display: "flex",
@@ -2246,8 +2653,8 @@ export default function TableKiosk() {
                         }}
                     >
                         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                            <span style={{ fontWeight: 700, fontSize: "0.85rem", color: "#ff9f43" }}>
-                                👨‍🍳 Kitchen Status:
+                            <span style={{ fontWeight: 800, fontSize: "0.85rem", color: "#ff9f43" }}>
+                                👨‍🍳 Live Order Status:
                             </span>
                             {activeOrders.map((ord) => {
                                 const stageIdx = ORDER_STAGES.indexOf(ord.status);
@@ -2261,194 +2668,494 @@ export default function TableKiosk() {
                                             background: "rgba(0,0,0,0.35)",
                                             padding: "4px 12px",
                                             borderRadius: 999,
-                                            border: "1px solid rgba(255,255,255,0.1)",
-                                            fontSize: "0.78rem",
+                                            border: "1px solid rgba(255,255,255,0.12)",
+                                            fontSize: "0.8rem",
                                         }}
                                     >
                                         <strong>#{ord.order_number}</strong>
-                                        <span className={`badge badge-${ord.status.toLowerCase()}`}>{ord.status}</span>
+                                        <span className={`badge badge-${ord.status.toLowerCase()}`}>
+                                            {ord.status === "READY" ? "ON THE WAY TO TABLE" : ord.status}
+                                        </span>
                                         <span className="text-muted">({stageIdx + 1}/5)</span>
                                     </div>
                                 );
                             })}
                         </div>
-                        <button
-                            className="btn btn-sm"
-                            style={{ background: "#ff6b35", color: "#fff", padding: "5px 12px" }}
-                            onClick={() => setShowCartoonModal(true)}
-                        >
-                            🍿 Watch Cartoons While Waiting
-                        </button>
+                        <div className="flex gap-2 items-center">
+                            {hasCancellableOrder && (
+                                <button
+                                    type="button"
+                                    className="btn btn-outline btn-sm"
+                                    style={{ borderColor: "var(--red)", color: "var(--red)", padding: "4px 10px" }}
+                                    onClick={() => sendChatMessage("cancel order", "❌ Cancel Order", true)}
+                                >
+                                    ❌ Cancel Order
+                                </button>
+                            )}
+                            <button
+                                className="btn btn-sm"
+                                style={{ background: "#ff6b35", color: "#fff", padding: "5px 12px" }}
+                                onClick={() => setShowCartoonModal(true)}
+                            >
+                                🍿 Watch Cartoons While Waiting
+                            </button>
+                        </div>
                     </div>
                 )}
 
-                {/* SEARCH & VEG/NON-VEG FILTER BAR */}
+                {/* EASY CUSTOMER GUIDE + SEARCH + MAIN CATEGORY FILTER BAR WITH "ALL MENU" DROPDOWN */}
                 <div
                     style={{
-                        padding: "14px 24px 10px",
+                        padding: "12px 24px",
+                        background: "#111422",
+                        borderBottom: "1px solid var(--border)",
                         display: "flex",
-                        gap: 12,
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        flexWrap: "wrap",
+                        flexDirection: "column",
+                        gap: 10,
                     }}
                 >
-                    <input
-                        className="input"
-                        style={{ maxWidth: 280, padding: "9px 14px", background: "#151828", borderRadius: 999 }}
-                        placeholder="🔍 Search your favorite dish…"
-                        value={searchQuery}
-                        onChange={(e) => {
-                            setAiMatchedItemIds(null);
-                            setSearchQuery(e.target.value);
+                    {/* Row 1: Search Bar + Veg / Non-Veg / Bestsellers */}
+                    <div
+                        style={{
+                            display: "flex",
+                            gap: 12,
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            flexWrap: "wrap",
                         }}
-                    />
-                    <div className="flex gap-2" style={{ flexWrap: "wrap" }}>
-                        {aiMatchedItemIds && (
+                    >
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 240 }}>
+                            <input
+                                className="input"
+                                style={{
+                                    maxWidth: 340,
+                                    padding: "10px 16px",
+                                    background: "#181c30",
+                                    borderRadius: 999,
+                                    fontSize: "0.92rem",
+                                }}
+                                placeholder="🔍 Search any dish (e.g. Paneer, Biryani)…"
+                                value={searchQuery}
+                                onChange={(e) => {
+                                    setAiMatchedItemIds(null);
+                                    setSearchQuery(e.target.value);
+                                }}
+                            />
+                            <span className="text-muted text-sm" style={{ display: "inline-block" }}>
+                                💡 Tap <strong>+ ADD</strong> on any dish or tap <strong>🎤 Speak</strong> at the bottom!
+                            </span>
+                        </div>
+
+                        <div className="flex gap-2" style={{ flexWrap: "wrap" }}>
+                            {aiMatchedItemIds && (
+                                <button
+                                    className="btn btn-sm"
+                                    style={{
+                                        borderRadius: 999,
+                                        background: "rgba(255,159,67,0.18)",
+                                        color: "#ff9f43",
+                                        border: "1px solid #ff9f43",
+                                    }}
+                                    onClick={() => {
+                                        setAiMatchedItemIds(null);
+                                        setBestsellerOnly(false);
+                                        setSelectedCategory("ALL");
+                                        setVegFilter("ALL");
+                                        setSearchQuery("");
+                                    }}
+                                >
+                                    ✨ Showing {aiMatchedItemIds.length} AI Picks · ✕ Reset
+                                </button>
+                            )}
                             <button
                                 className="btn btn-sm"
                                 style={{
                                     borderRadius: 999,
-                                    background: "rgba(255,159,67,0.18)",
-                                    color: "#ff9f43",
-                                    border: "1px solid #ff9f43",
+                                    padding: "7px 14px",
+                                    background: vegFilter === "ALL" && !bestsellerOnly ? "#ff6b35" : "#181c30",
+                                    color: vegFilter === "ALL" && !bestsellerOnly ? "#fff" : "var(--text-muted)",
+                                    border: "1px solid rgba(255,255,255,0.12)",
+                                    fontWeight: 700,
                                 }}
                                 onClick={() => {
                                     setAiMatchedItemIds(null);
                                     setBestsellerOnly(false);
-                                    setSelectedCategory("ALL");
                                     setVegFilter("ALL");
-                                    setSearchQuery("");
                                 }}
                             >
-                                ✨ Showing {aiMatchedItemIds.length} AI Results · ✕ Reset
+                                All Dishes
                             </button>
-                        )}
-                        <button
-                            className="btn btn-sm"
-                            style={{
-                                borderRadius: 999,
-                                background: vegFilter === "ALL" && !bestsellerOnly ? "#ff6b35" : "transparent",
-                                color: vegFilter === "ALL" && !bestsellerOnly ? "#fff" : "var(--text-muted)",
-                                border: "1px solid rgba(255,255,255,0.12)",
-                            }}
-                            onClick={() => {
-                                setAiMatchedItemIds(null);
-                                setBestsellerOnly(false);
-                                setVegFilter("ALL");
-                            }}
-                        >
-                            All Dishes
-                        </button>
-                        <button
-                            className="btn btn-sm"
-                            style={{
-                                borderRadius: 999,
-                                background: vegFilter === "VEG" ? "var(--green)" : "transparent",
-                                color: vegFilter === "VEG" ? "#0b0d14" : "var(--green)",
-                                border: "1px solid var(--green)",
-                            }}
-                            onClick={() => {
-                                setAiMatchedItemIds(null);
-                                setVegFilter("VEG");
-                            }}
-                        >
-                            🟢 Pure Veg
-                        </button>
-                        <button
-                            className="btn btn-sm"
-                            style={{
-                                borderRadius: 999,
-                                background: vegFilter === "NONVEG" ? "var(--red)" : "transparent",
-                                color: vegFilter === "NONVEG" ? "#fff" : "var(--red)",
-                                border: "1px solid var(--red)",
-                            }}
-                            onClick={() => {
-                                setAiMatchedItemIds(null);
-                                setVegFilter("NONVEG");
-                            }}
-                        >
-                            🔴 Non-Veg
-                        </button>
-                        <button
-                            className="btn btn-sm"
-                            style={{
-                                borderRadius: 999,
-                                background: bestsellerOnly ? "linear-gradient(135deg, #f9ca24, #f0932b)" : "transparent",
-                                color: bestsellerOnly ? "#111" : "#f9ca24",
-                                border: "1px solid #f9ca24",
-                                fontWeight: 800,
-                            }}
-                            onClick={() => {
-                                setAiMatchedItemIds(null);
-                                setBestsellerOnly((prev) => !prev);
-                            }}
-                        >
-                            ⭐ Best Dishes
-                        </button>
+                            <button
+                                className="btn btn-sm"
+                                style={{
+                                    borderRadius: 999,
+                                    padding: "7px 14px",
+                                    background: vegFilter === "VEG" ? "var(--green)" : "#181c30",
+                                    color: vegFilter === "VEG" ? "#0b0d14" : "var(--green)",
+                                    border: "1px solid var(--green)",
+                                    fontWeight: 800,
+                                }}
+                                onClick={() => {
+                                    setAiMatchedItemIds(null);
+                                    setVegFilter("VEG");
+                                }}
+                            >
+                                🟢 Pure Veg
+                            </button>
+                            <button
+                                className="btn btn-sm"
+                                style={{
+                                    borderRadius: 999,
+                                    padding: "7px 14px",
+                                    background: vegFilter === "NONVEG" ? "var(--red)" : "#181c30",
+                                    color: vegFilter === "NONVEG" ? "#fff" : "var(--red)",
+                                    border: "1px solid var(--red)",
+                                    fontWeight: 800,
+                                }}
+                                onClick={() => {
+                                    setAiMatchedItemIds(null);
+                                    setVegFilter("NONVEG");
+                                }}
+                            >
+                                🔴 Non-Veg
+                            </button>
+                            <button
+                                className="btn btn-sm"
+                                style={{
+                                    borderRadius: 999,
+                                    padding: "7px 14px",
+                                    background: bestsellerOnly ? "linear-gradient(135deg, #f9ca24, #f0932b)" : "#181c30",
+                                    color: bestsellerOnly ? "#111" : "#f9ca24",
+                                    border: "1px solid #f9ca24",
+                                    fontWeight: 800,
+                                }}
+                                onClick={() => {
+                                    setAiMatchedItemIds(null);
+                                    setBestsellerOnly((prev) => !prev);
+                                }}
+                            >
+                                ⭐ Best Dishes
+                            </button>
+                        </div>
                     </div>
-                </div>
 
-                {/* CATEGORY PILLS */}
-                <div
-                    style={{
-                        padding: "0 24px 12px",
-                        display: "flex",
-                        gap: 8,
-                        overflowX: "auto",
-                        borderBottom: "1px solid var(--border)",
-                    }}
-                >
-                    <button
-                        className="btn btn-sm"
+                    {/* Row 2: Main Categories (3-4 buttons) + "All Menu ▾" Hover/Click Dropdown */}
+                    <div
                         style={{
-                            borderRadius: 999,
-                            background: selectedCategory === "ALL" && !aiMatchedItemIds ? "linear-gradient(135deg, #ff6b35, #f7931e)" : "#151828",
-                            color: "#fff",
-                            border: "1px solid rgba(255,255,255,0.08)",
-                        }}
-                        onClick={() => {
-                            setAiMatchedItemIds(null);
-                            setSelectedCategory("ALL");
-                            setSearchQuery("");
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
+                            flexWrap: "wrap",
+                            position: "relative",
                         }}
                     >
-                        🔥 All Menu
-                    </button>
-                    {categories.map((cat) => (
+                        {/* All Menu Dropdown Trigger (Hover or Click opens all categories) */}
+                        <div
+                            style={{ position: "relative" }}
+                            onMouseEnter={() => setShowAllCategoriesMenu(true)}
+                            onMouseLeave={() => setShowAllCategoriesMenu(false)}
+                        >
+                            <button
+                                type="button"
+                                className="btn btn-sm"
+                                style={{
+                                    borderRadius: 999,
+                                    padding: "8px 18px",
+                                    fontSize: "0.9rem",
+                                    fontWeight: 900,
+                                    background:
+                                        selectedCategory === "ALL" && !aiMatchedItemIds
+                                            ? "linear-gradient(135deg, #ff6b35, #f7931e)"
+                                            : "#1c2038",
+                                    color: "#fff",
+                                    border: "1.5px solid #ff6b35",
+                                    boxShadow: "0 4px 14px rgba(255,107,53,0.28)",
+                                }}
+                                onClick={() => {
+                                    setShowAllCategoriesMenu((prev) => !prev);
+                                }}
+                            >
+                                🔥 All Menu ({categories.length} Categories) ▾
+                            </button>
+
+                            {/* Dropdown Popover listing all categories as compact Icon-Style Tiles when clicked or hovered */}
+                            {showAllCategoriesMenu && (
+                                <div
+                                    style={{
+                                        position: "absolute",
+                                        top: "100%",
+                                        left: 0,
+                                        paddingTop: 8,
+                                        zIndex: 9990,
+                                        width: "min(92vw, 680px)",
+                                    }}
+                                >
+                                    <div
+                                        style={{
+                                            background: "#13172b",
+                                            border: "2px solid #ff6b35",
+                                            borderRadius: 18,
+                                            padding: "14px 16px",
+                                            boxShadow: "0 24px 60px rgba(0,0,0,0.92)",
+                                        }}
+                                    >
+                                        <div
+                                            style={{
+                                                display: "flex",
+                                                justifyContent: "space-between",
+                                                alignItems: "center",
+                                                marginBottom: 12,
+                                                paddingBottom: 8,
+                                                borderBottom: "1px solid rgba(255,255,255,0.1)",
+                                            }}
+                                        >
+                                            <span style={{ fontWeight: 900, fontSize: "0.9rem", color: "#ffd166" }}>
+                                                ✨ Choose Menu Category
+                                            </span>
+                                            <button
+                                                type="button"
+                                                style={{
+                                                    background: "rgba(255,255,255,0.08)",
+                                                    border: "none",
+                                                    borderRadius: 8,
+                                                    padding: "3px 9px",
+                                                    color: "#cbd5e1",
+                                                    cursor: "pointer",
+                                                    fontSize: "0.82rem",
+                                                    fontWeight: 800,
+                                                }}
+                                                onClick={() => setShowAllCategoriesMenu(false)}
+                                            >
+                                                ✕
+                                            </button>
+                                        </div>
+                                        <div
+                                            style={{
+                                                display: "grid",
+                                                gridTemplateColumns: "repeat(auto-fill, minmax(105px, 1fr))",
+                                                gap: 10,
+                                                maxHeight: "48vh",
+                                                overflowY: "auto",
+                                            }}
+                                        >
+                                            <button
+                                                type="button"
+                                                style={{
+                                                    display: "flex",
+                                                    flexDirection: "column",
+                                                    alignItems: "center",
+                                                    justifyContent: "center",
+                                                    gap: 5,
+                                                    borderRadius: 14,
+                                                    padding: "10px 8px",
+                                                    cursor: "pointer",
+                                                    background:
+                                                        selectedCategory === "ALL"
+                                                            ? "linear-gradient(135deg, #ff6b35, #f7931e)"
+                                                            : "#1c223d",
+                                                    color: "#fff",
+                                                    border:
+                                                        selectedCategory === "ALL"
+                                                            ? "1.5px solid #ffd166"
+                                                            : "1px solid rgba(255,255,255,0.1)",
+                                                    boxShadow:
+                                                        selectedCategory === "ALL"
+                                                            ? "0 6px 16px rgba(255,107,53,0.35)"
+                                                            : "none",
+                                                    textAlign: "center",
+                                                }}
+                                                onClick={() => {
+                                                    setAiMatchedItemIds(null);
+                                                    setSelectedCategory("ALL");
+                                                    setSearchQuery("");
+                                                    setShowAllCategoriesMenu(false);
+                                                }}
+                                            >
+                                                <span style={{ fontSize: "1.65rem", lineHeight: 1 }}>🍽️</span>
+                                                <span
+                                                    style={{
+                                                        fontSize: "0.78rem",
+                                                        fontWeight: 800,
+                                                        lineHeight: 1.2,
+                                                        maxWidth: "100%",
+                                                        overflow: "hidden",
+                                                        textOverflow: "ellipsis",
+                                                        whiteSpace: "nowrap",
+                                                    }}
+                                                >
+                                                    All Dishes
+                                                </span>
+                                                <span
+                                                    style={{
+                                                        fontSize: "0.68rem",
+                                                        fontWeight: 700,
+                                                        padding: "1px 7px",
+                                                        borderRadius: 999,
+                                                        background: "rgba(0,0,0,0.3)",
+                                                        color: "#ffd166",
+                                                    }}
+                                                >
+                                                    {menuItems.length} items
+                                                </span>
+                                            </button>
+                                            {categories.map((cat) => {
+                                                const count = menuItems.filter((m) => m.category_id === cat.id).length;
+                                                const isSel = selectedCategory === cat.id;
+                                                const icon = getCategoryIcon(cat.name);
+                                                return (
+                                                    <button
+                                                        key={cat.id}
+                                                        type="button"
+                                                        style={{
+                                                            display: "flex",
+                                                            flexDirection: "column",
+                                                            alignItems: "center",
+                                                            justifyContent: "center",
+                                                            gap: 5,
+                                                            borderRadius: 14,
+                                                            padding: "10px 8px",
+                                                            cursor: "pointer",
+                                                            background: isSel
+                                                                ? "linear-gradient(135deg, #ff6b35, #f7931e)"
+                                                                : "#1c223d",
+                                                            color: isSel ? "#fff" : "#f1f5f9",
+                                                            border: isSel
+                                                                ? "1.5px solid #ffd166"
+                                                                : "1px solid rgba(255,255,255,0.1)",
+                                                            boxShadow: isSel
+                                                                ? "0 6px 16px rgba(255,107,53,0.35)"
+                                                                : "none",
+                                                            textAlign: "center",
+                                                        }}
+                                                        onClick={() => {
+                                                            setAiMatchedItemIds(null);
+                                                            setSelectedCategory(cat.id);
+                                                            setSearchQuery("");
+                                                            setShowAllCategoriesMenu(false);
+                                                        }}
+                                                    >
+                                                        <span style={{ fontSize: "1.65rem", lineHeight: 1 }}>{icon}</span>
+                                                        <span
+                                                            style={{
+                                                                fontSize: "0.78rem",
+                                                                fontWeight: isSel ? 800 : 700,
+                                                                lineHeight: 1.2,
+                                                                maxWidth: "100%",
+                                                                overflow: "hidden",
+                                                                textOverflow: "ellipsis",
+                                                                whiteSpace: "nowrap",
+                                                            }}
+                                                        >
+                                                            {cat.name}
+                                                        </span>
+                                                        <span
+                                                            style={{
+                                                                fontSize: "0.68rem",
+                                                                fontWeight: 700,
+                                                                padding: "1px 7px",
+                                                                borderRadius: 999,
+                                                                background: isSel ? "rgba(0,0,0,0.28)" : "rgba(255,255,255,0.06)",
+                                                                color: isSel ? "#ffd166" : "#94a3b8",
+                                                            }}
+                                                        >
+                                                            {count} items
+                                                        </span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Quick "Show All Dishes" button */}
                         <button
-                            key={cat.id}
+                            type="button"
                             className="btn btn-sm"
                             style={{
                                 borderRadius: 999,
+                                padding: "8px 16px",
                                 background:
-                                    selectedCategory === cat.id
-                                        ? "linear-gradient(135deg, #ff6b35, #f7931e)"
-                                        : "#151828",
-                                color: selectedCategory === cat.id ? "#fff" : "var(--text)",
-                                border: "1px solid rgba(255,255,255,0.08)",
+                                    selectedCategory === "ALL" && !aiMatchedItemIds
+                                        ? "rgba(255,107,53,0.22)"
+                                        : "#181c30",
+                                color: selectedCategory === "ALL" && !aiMatchedItemIds ? "#ffd166" : "var(--text)",
+                                border:
+                                    selectedCategory === "ALL" && !aiMatchedItemIds
+                                        ? "1px solid #ffd166"
+                                        : "1px solid rgba(255,255,255,0.08)",
+                                fontWeight: 700,
                             }}
                             onClick={() => {
                                 setAiMatchedItemIds(null);
-                                setSelectedCategory(cat.id);
+                                setSelectedCategory("ALL");
                                 setSearchQuery("");
                             }}
                         >
-                            {cat.name}
+                            🍽️ All Dishes
                         </button>
-                    ))}
+
+                        {/* Only show 4 Main Categories inline on Tablet so buttons are large & easy to tap */}
+                        {mainCategories.map((cat) => (
+                            <button
+                                key={cat.id}
+                                type="button"
+                                className="btn btn-sm"
+                                style={{
+                                    borderRadius: 999,
+                                    padding: "8px 16px",
+                                    fontSize: "0.88rem",
+                                    fontWeight: selectedCategory === cat.id ? 800 : 600,
+                                    background:
+                                        selectedCategory === cat.id
+                                            ? "linear-gradient(135deg, #ff6b35, #f7931e)"
+                                            : "#181c30",
+                                    color: selectedCategory === cat.id ? "#fff" : "var(--text)",
+                                    border: "1px solid rgba(255,255,255,0.1)",
+                                }}
+                                onClick={() => {
+                                    setAiMatchedItemIds(null);
+                                    setSelectedCategory(cat.id);
+                                    setSearchQuery("");
+                                }}
+                            >
+                                {getCategoryIcon(cat.name)} {cat.name}
+                            </button>
+                        ))}
+
+                        {/* If customer selected a category from the "All Menu" dropdown that isn't in the first 4, show it as an active pill */}
+                        {activeExtraCategory && (
+                            <button
+                                type="button"
+                                className="btn btn-sm"
+                                style={{
+                                    borderRadius: 999,
+                                    padding: "8px 16px",
+                                    fontSize: "0.88rem",
+                                    fontWeight: 800,
+                                    background: "linear-gradient(135deg, #ff6b35, #f7931e)",
+                                    color: "#fff",
+                                    border: "1px solid #ffd166",
+                                }}
+                                onClick={() => setShowAllCategoriesMenu(true)}
+                            >
+                                {getCategoryIcon(activeExtraCategory.name)} {activeExtraCategory.name} ✕
+                            </button>
+                        )}
+                    </div>
                 </div>
 
-                {/* ATTRACTIVE FOOD APP MENU GRID WITH IMAGES */}
+                {/* ATTRACTIVE FOOD APP MENU GRID WITH IMAGES (Extra bottom padding for floating voice & cart dock) */}
                 <div
                     style={{
                         flex: 1,
                         overflowY: "auto",
-                        padding: "16px 20px",
+                        padding: "18px 24px 150px",
                         display: "grid",
-                        gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))",
+                        gridTemplateColumns: "repeat(auto-fill, minmax(225px, 1fr))",
                         gridAutoRows: "max-content",
-                        gap: 16,
+                        gap: 18,
                         alignContent: "start",
                     }}
                 >
@@ -2572,7 +3279,6 @@ export default function TableKiosk() {
                                     </div>
                                 </div>
 
-
                                 {/* Price & Instant Add/+/- Controls */}
                                 <div
                                     style={{
@@ -2607,8 +3313,8 @@ export default function TableKiosk() {
                                                 type="button"
                                                 onClick={() => handleUpdateCartQty(inCart, inCart.quantity - 1)}
                                                 style={{
-                                                    width: 28,
-                                                    height: 28,
+                                                    width: 30,
+                                                    height: 30,
                                                     borderRadius: 7,
                                                     border: "none",
                                                     background: "#151828",
@@ -2626,8 +3332,8 @@ export default function TableKiosk() {
                                                 type="button"
                                                 onClick={() => handleUpdateCartQty(inCart, inCart.quantity + 1)}
                                                 style={{
-                                                    width: 28,
-                                                    height: 28,
+                                                    width: 30,
+                                                    height: 30,
                                                     borderRadius: 7,
                                                     border: "none",
                                                     background: "#ff6b35",
@@ -2648,9 +3354,9 @@ export default function TableKiosk() {
                                                 color: "#fff",
                                                 border: "none",
                                                 borderRadius: 10,
-                                                padding: "9px 20px",
+                                                padding: "10px 22px",
                                                 fontWeight: 800,
-                                                fontSize: "0.86rem",
+                                                fontSize: "0.88rem",
                                                 cursor: "pointer",
                                                 boxShadow: "0 4px 12px rgba(255,107,53,0.3)",
                                             }}
@@ -2663,364 +3369,531 @@ export default function TableKiosk() {
                         );
                     })}
                 </div>
+            </div>
 
-                {/* BOTTOM CART & ORDER BAR */}
+            {/* ═══════════════════════════════════════════════════════════════════════
+                FLOATING TOP-RIGHT / SIDE POPUP STACK (Non-Intrusive: Coexists with Video & Joke!)
+                1. Waiter Order Delivery Confirmation Popup (When Chef marks READY)
+                2. Auto Billing & QR Code Payment Card (Once Order is marked SERVED)
+                3. Joke Card & Main-Screen AI Bot Response Popup (Orders, Cart, Recommendations)
+               ═══════════════════════════════════════════════════════════════════════ */}
+            <div
+                style={{
+                    position: "fixed",
+                    top: statusToast ? 96 : 74,
+                    right: 20,
+                    zIndex: 10010,
+                    width: "min(92vw, 390px)",
+                    maxHeight: "calc(100vh - 200px)",
+                    overflowY: "auto",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
+                    pointerEvents: "none",
+                }}
+            >
+                {/* 1. WAITER ORDER DELIVERY CONFIRMATION POPUP (Holds until Waiter clicks Delivered) */}
+                {readyOrders.length > 0 && (
+                    <div
+                        style={{
+                            pointerEvents: "auto",
+                            background: "linear-gradient(145deg, #1b203d 0%, #121528 100%)",
+                            border: "2px solid #23d18b",
+                            borderRadius: 18,
+                            padding: "18px 20px",
+                            boxShadow: "0 18px 45px rgba(0,0,0,0.75), 0 0 28px rgba(35,209,139,0.28)",
+                        }}
+                    >
+                        <div
+                            style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                background: "rgba(35,209,139,0.16)",
+                                border: "1px solid #23d18b",
+                                color: "#23d18b",
+                                padding: "4px 12px",
+                                borderRadius: 999,
+                                fontSize: "0.75rem",
+                                fontWeight: 900,
+                                marginBottom: 10,
+                            }}
+                        >
+                            🛎️ ORDER READY & ON THE WAY TO TABLE T{sessionData.table.table_number}
+                        </div>
+
+                        <div style={{ fontSize: "1.12rem", fontWeight: 900, color: "#fff", marginBottom: 6 }}>
+                            🍽️ Your Order #{readyOrders.map((o) => o.order_number).join(", #")} is on the way to your table!
+                        </div>
+
+                        <p style={{ fontSize: "0.86rem", color: "#cbd5e1", lineHeight: 1.45, marginBottom: 12 }}>
+                            Our chef has prepared your fresh meal and our waiter is bringing it right to your table.
+                        </p>
+
+                        <div
+                            style={{
+                                background: "rgba(255,255,255,0.05)",
+                                border: "1px solid rgba(255,255,255,0.12)",
+                                borderRadius: 12,
+                                padding: "12px 14px",
+                                textAlign: "center",
+                            }}
+                        >
+                            <div style={{ fontWeight: 900, fontSize: "1rem", color: "#ffd166", marginBottom: 10 }}>
+                                Is your order served at the table?
+                            </div>
+                            <button
+                                type="button"
+                                className="btn btn-success"
+                                disabled={markingDelivered}
+                                onClick={() => handleWaiterMarkDelivered(readyOrders[0].id)}
+                                style={{
+                                    width: "100%",
+                                    justifyContent: "center",
+                                    padding: "12px 18px",
+                                    fontSize: "1rem",
+                                    fontWeight: 900,
+                                    borderRadius: 12,
+                                    boxShadow: "0 8px 22px rgba(35,209,139,0.4)",
+                                }}
+                            >
+                                {markingDelivered ? "Marking as Served…" : "✅ Delivered"}
+                            </button>
+                            <div
+                                style={{
+                                    marginTop: 8,
+                                    fontSize: "0.75rem",
+                                    color: "#ff9f43",
+                                    fontWeight: 700,
+                                    lineHeight: 1.35,
+                                }}
+                            >
+                                ⚠️ Only for Waiter: Please click "Delivered" only after serving the order to the table.
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* 2. AUTO BILLING DETAILS & QR CODE POPUP ONCE ORDER IS SERVED (Coexists with Video/Joke) */}
+                {hasServedOrder && (showServedBillWidget || !showBillModal) && (
+                    <div
+                        style={{
+                            pointerEvents: "auto",
+                            background: "linear-gradient(155deg, #161c33 0%, #101425 100%)",
+                            border: "2px solid var(--green)",
+                            borderRadius: 18,
+                            padding: "16px 18px",
+                            boxShadow: "0 18px 45px rgba(0,0,0,0.75), 0 0 25px rgba(35,209,139,0.22)",
+                        }}
+                    >
+                        <div className="flex justify-between items-center" style={{ marginBottom: 8 }}>
+                            <span
+                                style={{
+                                    background: "rgba(35,209,139,0.16)",
+                                    border: "1px solid var(--green)",
+                                    color: "var(--green)",
+                                    padding: "3px 10px",
+                                    borderRadius: 999,
+                                    fontSize: "0.73rem",
+                                    fontWeight: 900,
+                                }}
+                            >
+                                🧾 ORDER SERVED · SCAN TO PAY BILL
+                            </span>
+                            <button
+                                type="button"
+                                className="btn btn-outline btn-sm"
+                                style={{ padding: "2px 8px", fontSize: "0.72rem" }}
+                                onClick={() => setShowBillModal(true)}
+                            >
+                                Full Invoice ↗
+                            </button>
+                        </div>
+
+                        <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 12 }}>
+                            <div
+                                style={{
+                                    background: "#fff",
+                                    padding: 8,
+                                    borderRadius: 12,
+                                    flexShrink: 0,
+                                }}
+                            >
+                                <QRCodeCanvas value={upiPayUri} size={108} level="M" includeMargin={false} />
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <div className="text-muted" style={{ fontSize: "0.75rem" }}>
+                                    Table T{sessionData.table.table_number} · GST Total
+                                </div>
+                                <div style={{ fontSize: "1.55rem", fontWeight: 900, color: "var(--green)", lineHeight: 1.15 }}>
+                                    ₹{ordersGrandTotal.toFixed(2)}
+                                </div>
+                                <div className="text-muted" style={{ fontSize: "0.72rem", marginTop: 3 }}>
+                                    Sub: ₹{ordersSubtotal.toFixed(0)} + GST: ₹{(ordersCgst + ordersSgst).toFixed(2)}
+                                </div>
+                                <div style={{ fontSize: "0.72rem", color: "#ffd166", marginTop: 4 }}>
+                                    UPI: <strong>{effectiveUpiId}</strong>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="flex gap-2">
+                            <button
+                                type="button"
+                                className="btn btn-outline btn-sm"
+                                style={{ flex: 1, justifyContent: "center", fontSize: "0.78rem" }}
+                                onClick={handleOpenBillModalDirect}
+                            >
+                                📄 View Items
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-success btn-sm"
+                                style={{ flex: 1.4, justifyContent: "center", fontWeight: 900, fontSize: "0.82rem" }}
+                                disabled={payingQR}
+                                onClick={() =>
+                                    handlePayViaTableQR(ordersGrandTotal, ordersSubtotal, ordersCgst, ordersSgst)
+                                }
+                            >
+                                {payingQR ? "Processing…" : `✅ Payment Done (₹${ordersGrandTotal.toFixed(0)})`}
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* 3. JOKE ENGAGEMENT CARD (Stays alongside Order / Bill popups without interruption) */}
+                {jokeBanner && (
+                    <div
+                        style={{
+                            pointerEvents: "auto",
+                            background: "linear-gradient(145deg, #231f38 0%, #171528 100%)",
+                            border: "1.5px solid #f9ca24",
+                            borderRadius: 16,
+                            padding: "14px 16px",
+                            boxShadow: "0 14px 35px rgba(0,0,0,0.65)",
+                        }}
+                    >
+                        <div className="flex justify-between items-center" style={{ marginBottom: 6 }}>
+                            <span style={{ fontWeight: 900, fontSize: "0.84rem", color: "#f9ca24" }}>
+                                😂 AI Waiter Joke Time!
+                            </span>
+                            <div className="flex gap-2">
+                                <button
+                                    type="button"
+                                    className="btn btn-outline btn-sm"
+                                    style={{ padding: "2px 8px", fontSize: "0.72rem", borderColor: "#f9ca24", color: "#f9ca24" }}
+                                    onClick={() => sendChatMessage("tell_joke", "😂 Another Joke", true)}
+                                >
+                                    Another 😂
+                                </button>
+                                <button
+                                    type="button"
+                                    style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer" }}
+                                    onClick={() => setJokeBanner(null)}
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                        </div>
+                        <div style={{ fontSize: "0.88rem", color: "#fff", lineHeight: 1.45, whiteSpace: "pre-line" }}>
+                            {jokeBanner}
+                        </div>
+                    </div>
+                )}
+
+                {/* 4. MAIN SCREEN AI BOT RESPONSE POPUP (Shows Orders, Cart Updates, Recommendations, etc.) */}
+                {aiPopupCard && (
+                    <div
+                        style={{
+                            pointerEvents: "auto",
+                            background: "linear-gradient(155deg, #1b203a 0%, #13172b 100%)",
+                            border: "1.5px solid #ff6b35",
+                            borderRadius: 16,
+                            padding: "16px 18px",
+                            boxShadow: "0 16px 40px rgba(0,0,0,0.75)",
+                        }}
+                    >
+                        <div className="flex justify-between items-center" style={{ marginBottom: 8 }}>
+                            <div style={{ fontWeight: 900, fontSize: "0.92rem", color: "#ffd166" }}>
+                                {aiPopupCard.title}
+                            </div>
+                            <button
+                                type="button"
+                                style={{
+                                    background: "rgba(255,255,255,0.08)",
+                                    border: "none",
+                                    color: "#cbd5e1",
+                                    borderRadius: 8,
+                                    padding: "2px 8px",
+                                    cursor: "pointer",
+                                }}
+                                onClick={() => setAiPopupCard(null)}
+                            >
+                                ✕
+                            </button>
+                        </div>
+                        <div
+                            style={{
+                                fontSize: "0.86rem",
+                                color: "#e2e8f0",
+                                lineHeight: 1.5,
+                                whiteSpace: "pre-line",
+                                maxHeight: 180,
+                                overflowY: "auto",
+                            }}
+                        >
+                            {aiPopupCard.body}
+                        </div>
+                        {aiPopupCard.buttons && aiPopupCard.buttons.length > 0 && (
+                            <div className="flex gap-2" style={{ marginTop: 12, flexWrap: "wrap" }}>
+                                {aiPopupCard.buttons
+                                    .filter((b) => !(b.id === "cancel_order" && !hasCancellableOrder))
+                                    .map((b) => (
+                                        <button
+                                            key={b.id}
+                                            type="button"
+                                            className="btn btn-sm"
+                                            style={{
+                                                background: "rgba(255,107,53,0.18)",
+                                                border: "1px solid #ff6b35",
+                                                color: "#fff",
+                                                borderRadius: 10,
+                                                fontWeight: 700,
+                                            }}
+                                            onClick={() => sendChatMessage(b.id, b.title, true)}
+                                        >
+                                            {b.title}
+                                        </button>
+                                    ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+
+            {/* ═══════════════════════════════════════════════════════════════════════
+                FLOATING BOTTOM VOICE MIC, AI INPUT & CART BAR (Noticeable & Tablet-Friendly)
+               ═══════════════════════════════════════════════════════════════════════ */}
+            <div
+                style={{
+                    position: "fixed",
+                    bottom: 12,
+                    left: "50%",
+                    transform: "translateX(-50%)",
+                    width: "min(96vw, 1280px)",
+                    zIndex: 9980,
+                    background: "linear-gradient(90deg, rgba(21,24,42,0.97) 0%, rgba(28,24,52,0.97) 100%)",
+                    border: "1.5px solid rgba(255,107,53,0.45)",
+                    borderRadius: 20,
+                    padding: "10px 18px",
+                    boxShadow: "0 16px 45px rgba(0,0,0,0.75), 0 0 25px rgba(255,107,53,0.18)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                    backdropFilter: "blur(12px)",
+                }}
+            >
+                {/* Live Voice Transcript / Bot Thinking Notice */}
+                {(voiceTranscriptNotice || botThinking) && (
+                    <div
+                        style={{
+                            padding: "5px 12px",
+                            background: "rgba(255,159,67,0.16)",
+                            border: "1px solid rgba(255,159,67,0.4)",
+                            borderRadius: 10,
+                            color: "#ffd166",
+                            fontSize: "0.8rem",
+                            fontWeight: 700,
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                        }}
+                    >
+                        <span>
+                            {botThinking ? "🤖 AI Waiter is processing your request…" : voiceTranscriptNotice}
+                        </span>
+                        {voiceTranscriptNotice && (
+                            <button
+                                type="button"
+                                onClick={() => setVoiceTranscriptNotice("")}
+                                style={{ background: "none", border: "none", color: "#fff", cursor: "pointer" }}
+                            >
+                                ✕
+                            </button>
+                        )}
+                    </div>
+                )}
+
                 <div
                     style={{
-                        padding: "14px 24px",
-                        background: "#151828",
-                        borderTop: "1px solid rgba(255,255,255,0.1)",
                         display: "flex",
-                        justifyContent: "space-between",
                         alignItems: "center",
-                        gap: 16,
+                        justifyContent: "space-between",
+                        gap: 14,
                         flexWrap: "wrap",
                     }}
                 >
-                    <div>
-                        <div className="flex items-center gap-2">
-                            <div style={{ fontWeight: 800, fontSize: "1rem" }}>
-                                🛒 Cart: {(cart.items || []).reduce((s: number, i: CartItem) => s + i.quantity, 0)} items
-                                {" · "}
-                                <span style={{ color: "var(--green)" }}>₹{Number(cart.total || 0).toFixed(2)}</span>
+                    {/* LEFT: FLOATING VOICE SPEAK BUTTON + AI CHAT INPUT */}
+                    <form
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            setVoiceTranscriptNotice("");
+                            sendChatMessage(undefined, undefined, true);
+                        }}
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
+                            flex: 1.4,
+                            minWidth: 300,
+                        }}
+                    >
+                        <button
+                            type="button"
+                            onClick={toggleVoiceInput}
+                            className={isListening ? "pulse" : ""}
+                            style={{
+                                background: isListening
+                                    ? "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
+                                    : "linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)",
+                                color: "#fff",
+                                border: "2px solid rgba(255,255,255,0.25)",
+                                borderRadius: 999,
+                                padding: "11px 20px",
+                                fontWeight: 900,
+                                fontSize: "0.95rem",
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                boxShadow: isListening
+                                    ? "0 0 25px rgba(239,68,68,0.7)"
+                                    : "0 6px 20px rgba(255,107,53,0.45)",
+                                flexShrink: 0,
+                            }}
+                            title={isListening ? "Tap to Finish & Send" : "Tap to Speak with AI Waiter"}
+                        >
+                            <span style={{ fontSize: "1.15rem" }}>{isListening ? "⏹️" : "🎤"}</span>
+                            <span>{isListening ? "Done Speaking" : "Tap to Speak"}</span>
+                        </button>
+
+                        <input
+                            className="input"
+                            style={{
+                                flex: 1,
+                                minWidth: 160,
+                                borderRadius: 999,
+                                padding: "10px 16px",
+                                background: "rgba(0,0,0,0.4)",
+                                border: "1px solid rgba(255,255,255,0.18)",
+                                fontSize: "0.9rem",
+                            }}
+                            placeholder={
+                                isListening
+                                    ? "🎤 Listening… speak your order now!"
+                                    : "Type or speak: '2 Butter Naan', 'best dishes', 'confirm order'…"
+                            }
+                            value={chatInput}
+                            onChange={(e) => setChatInput(e.target.value)}
+                        />
+
+                        <button
+                            type="submit"
+                            className="btn"
+                            style={{
+                                background: "#ff6b35",
+                                color: "#fff",
+                                borderRadius: 999,
+                                padding: "10px 18px",
+                                fontWeight: 800,
+                                flexShrink: 0,
+                            }}
+                            disabled={botThinking}
+                        >
+                            Send
+                        </button>
+                    </form>
+
+                    {/* RIGHT: CART SUMMARY & PLACE ORDER / BILL ACTIONS */}
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
+                            flexWrap: "wrap",
+                        }}
+                    >
+                        <div
+                            style={{
+                                background: "rgba(255,255,255,0.05)",
+                                border: "1px solid rgba(255,255,255,0.12)",
+                                borderRadius: 14,
+                                padding: "6px 14px",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 10,
+                            }}
+                        >
+                            <div>
+                                <div style={{ fontWeight: 900, fontSize: "0.92rem", color: "#fff" }}>
+                                    🛒 Cart: {(cart.items || []).reduce((s: number, i: CartItem) => s + i.quantity, 0)} items ·{" "}
+                                    <span style={{ color: "var(--green)" }}>₹{Number(cart.total || 0).toFixed(2)}</span>
+                                </div>
+                                <div className="text-muted" style={{ fontSize: "0.7rem" }}>
+                                    incl. GST ₹{(Number(cart.cgst_amount || 0) + Number(cart.sgst_amount || 0)).toFixed(2)}
+                                </div>
                             </div>
                             {cart.items?.length > 0 && (
                                 <button
                                     type="button"
                                     className="btn btn-outline btn-sm"
                                     style={{
-                                        padding: "3px 10px",
-                                        fontSize: "0.75rem",
+                                        padding: "4px 10px",
+                                        fontSize: "0.74rem",
                                         color: "var(--red)",
                                         borderColor: "var(--red)",
                                         fontWeight: 800,
+                                        borderRadius: 8,
                                     }}
                                     onClick={() => setShowCartRemoveModal(true)}
                                 >
-                                    🗑️ Remove Item
+                                    🗑️ Edit / Remove
                                 </button>
                             )}
                         </div>
-                        <div className="text-muted" style={{ fontSize: "0.75rem" }}>
-                            Subtotal ₹{Number(cart.subtotal || 0).toFixed(2)} + CGST ₹{Number(cart.cgst_amount || 0).toFixed(2)} + SGST ₹{Number(cart.sgst_amount || 0).toFixed(2)}
-                        </div>
-                    </div>
 
-
-                    <div className="flex gap-2">
                         {cart.items?.length > 0 && (
                             <button
                                 type="button"
                                 onClick={handleInitiatePlaceOrder}
                                 style={{
-                                    background: "linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)",
-                                    color: "#fff",
+                                    background: "linear-gradient(135deg, #23d18b 0%, #10b981 100%)",
+                                    color: "#09131c",
                                     border: "none",
-                                    borderRadius: 10,
-                                    padding: "11px 22px",
-                                    fontWeight: 800,
+                                    borderRadius: 14,
+                                    padding: "11px 20px",
+                                    fontWeight: 900,
                                     fontSize: "0.92rem",
                                     cursor: "pointer",
-                                    boxShadow: "0 4px 15px rgba(255,107,53,0.35)",
+                                    boxShadow: "0 6px 20px rgba(35,209,139,0.4)",
                                 }}
                             >
-                                🍽️ Place Order to Kitchen (₹{Number(cart.total).toFixed(2)})
+                                🍽️ Place Order (₹{Number(cart.total).toFixed(0)})
                             </button>
                         )}
+
                         {activeOrders.length > 0 && (
-                            <button className="btn btn-success" onClick={handleOpenBillModalDirect}>
-                                🧾 View Total GST Bill & Pay (₹{ordersGrandTotal.toFixed(2)})
+                            <button
+                                type="button"
+                                className="btn btn-success"
+                                style={{ borderRadius: 14, padding: "11px 16px", fontWeight: 900 }}
+                                onClick={handleOpenBillModalDirect}
+                            >
+                                🧾 Pay Bill (₹{ordersGrandTotal.toFixed(0)})
                             </button>
                         )}
                     </div>
                 </div>
-            </div>
-
-            {/* ═══════════════════════════════════════════════════════════════════════
-                RIGHT PANEL (30%): AI VOICE & CHAT WAITER ASSISTANT
-               ═══════════════════════════════════════════════════════════════════════ */}
-            <div
-                style={{
-                    width: "100%",
-                    minWidth: 0,
-                    display: "flex",
-                    flexDirection: "column",
-                    height: "100vh",
-                    overflow: "hidden",
-                    background: "#121524",
-                }}
-            >
-                {/* AI ASSISTANT HEADER */}
-                <div
-                    style={{
-                        padding: "14px 18px",
-                        background: "#151828",
-                        borderBottom: "1px solid var(--border)",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                    }}
-                >
-                    <div className="flex items-center gap-2">
-                        <div
-                            style={{
-                                width: 38,
-                                height: 38,
-                                borderRadius: "50%",
-                                background: "rgba(255,107,53,0.18)",
-                                border: "1px solid #ff6b35",
-                                display: "grid",
-                                placeItems: "center",
-                                fontSize: "1.2rem",
-                            }}
-                        >
-                            🤖
-                        </div>
-                        <div>
-                            <div style={{ fontWeight: 800, fontSize: "0.96rem" }}>HelloDine AI Waiter</div>
-                            <div style={{ fontSize: "0.72rem", color: "var(--green)" }}>
-                                ● Ask about food, prices, GST bill, or say "confirm order"
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                        {/* Language Selector: Auto / English / Hindi / Odia */}
-                        <select
-                            className="input"
-                            style={{
-                                padding: "4px 8px",
-                                fontSize: "0.74rem",
-                                borderRadius: 14,
-                                background: "#1c2035",
-                                borderColor: "var(--border)",
-                                color: "#fff",
-                                cursor: "pointer",
-                            }}
-                            value={kioskLanguage}
-                            onChange={(e) => setKioskLanguage(e.target.value as any)}
-                            title="Select Language for AI Waiter"
-                        >
-                            <option value="auto">🌐 Auto</option>
-                            <option value="en">🇬🇧 English</option>
-                            <option value="hi">🇮🇳 हिन्दी</option>
-                            <option value="or">🇮🇳 ଓଡ଼ିଆ</option>
-                        </select>
-
-                        <button
-                            className={`btn btn-sm ${voiceEnabled ? "btn-primary" : "btn-outline"}`}
-                            onClick={() => {
-                                if (voiceEnabled && "speechSynthesis" in window) window.speechSynthesis.cancel();
-                                setVoiceEnabled(!voiceEnabled);
-                            }}
-                        >
-                            {voiceEnabled ? "🔊 Voice" : "🔇 Muted"}
-                        </button>
-                    </div>
-                </div>
-
-                {/* CHAT MESSAGES STREAM */}
-                <div
-                    style={{
-                        flex: 1,
-                        overflowY: "auto",
-                        padding: "16px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 12,
-                    }}
-                >
-                    {messages.map((m) => (
-                        <div
-                            key={m.id}
-                            style={{
-                                alignSelf: m.sender === "user" ? "flex-end" : "flex-start",
-                                maxWidth: "88%",
-                            }}
-                        >
-                            <div
-                                style={{
-                                    background:
-                                        m.sender === "user"
-                                            ? "linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)"
-                                            : "#1b1f34",
-                                    color: "#fff",
-                                    padding: "12px 14px",
-                                    borderRadius: m.sender === "user" ? "14px 14px 2px 14px" : "14px 14px 14px 2px",
-                                    border: "1px solid rgba(255,255,255,0.08)",
-                                    fontSize: "0.88rem",
-                                    lineHeight: 1.5,
-                                    whiteSpace: "pre-line",
-                                }}
-                            >
-                                {m.text}
-                            </div>
-
-                            {m.buttons && m.buttons.length > 0 && (
-                                <div className="flex gap-2" style={{ marginTop: 8, flexWrap: "wrap" }}>
-                                    {m.buttons
-                                        .filter((b) => !(b.id === "cancel_order" && !hasCancellableOrder))
-                                        .map((b) => (
-                                            <button
-                                                key={b.id}
-                                                className="btn btn-outline btn-sm"
-                                                style={{ background: "#1b1f34", borderColor: "#ff6b35", color: "#fff" }}
-                                                onClick={() => sendChatMessage(b.id, b.title, true)}
-                                            >
-                                                {b.title}
-                                            </button>
-                                        ))}
-                                </div>
-                            )}
-
-                            <div
-                                className="text-muted"
-                                style={{
-                                    fontSize: "0.68rem",
-                                    marginTop: 4,
-                                    textAlign: m.sender === "user" ? "right" : "left",
-                                }}
-                            >
-                                {m.time}
-                            </div>
-                        </div>
-                    ))}
-
-                    {botThinking && (
-                        <div
-                            style={{
-                                alignSelf: "flex-start",
-                                background: "#1b1f34",
-                                padding: "10px 14px",
-                                borderRadius: 12,
-                                fontSize: "0.84rem",
-                                color: "var(--text-muted)",
-                            }}
-                        >
-                            🤖 AI Waiter is replying…
-                        </div>
-                    )}
-                    <div ref={chatEndRef} />
-                </div>
-
-                {/* QUICK CHIPS FOR AI CHAT (Confirm, Order Status, Cancel Order, Bill) */}
-                <div
-                    style={{
-                        padding: "8px 14px",
-                        borderTop: "1px solid var(--border)",
-                        display: "flex",
-                        gap: 6,
-                        overflowX: "auto",
-                        background: "rgba(0,0,0,0.2)",
-                    }}
-                >
-                    <button
-                        className="btn btn-outline btn-sm"
-                        style={{ borderColor: "var(--green)", color: "var(--green)" }}
-                        onClick={() => sendChatMessage("confirm order", "✅ Confirm Order", true)}
-                    >
-                        ✅ Confirm Order
-                    </button>
-                    {activeOrders.length > 0 && (
-                        <button
-                            className="btn btn-outline btn-sm"
-                            style={{ borderColor: "#54a0ff", color: "#54a0ff" }}
-                            onClick={() => sendChatMessage("order_status", "👨‍🍳 Check Order Status", true)}
-                        >
-                            👨‍🍳 Order Status
-                        </button>
-                    )}
-                    {hasCancellableOrder && (
-                        <button
-                            className="btn btn-outline btn-sm"
-                            style={{ borderColor: "var(--red)", color: "var(--red)" }}
-                            onClick={() => sendChatMessage("cancel order", "❌ Cancel Order", true)}
-                        >
-                            ❌ Cancel Order
-                        </button>
-                    )}
-                    <button
-                        className="btn btn-outline btn-sm"
-                        onClick={() => sendChatMessage("how much is my total bill with gst", "🧾 How much is my bill?", true)}
-                    >
-                        🧾 Ask Bill
-                    </button>
-                </div>
-
-                {/* VOICE TRANSCRIPT NOTICE BAR (When voice is listening or needs review) */}
-                {voiceTranscriptNotice && (
-                    <div
-                        style={{
-                            padding: "6px 14px",
-                            background: "rgba(255,159,67,0.15)",
-                            borderTop: "1px solid rgba(255,159,67,0.35)",
-                            color: "#ff9f43",
-                            fontSize: "0.76rem",
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                        }}
-                    >
-                        <span>{voiceTranscriptNotice}</span>
-                        <button
-                            type="button"
-                            onClick={() => setVoiceTranscriptNotice("")}
-                            style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: "0.75rem" }}
-                        >
-                            ✕
-                        </button>
-                    </div>
-                )}
-
-                {/* VOICE MIC + CHAT INPUT BOX */}
-                <form
-                    onSubmit={(e) => {
-                        e.preventDefault();
-                        setVoiceTranscriptNotice("");
-                        sendChatMessage(undefined, undefined, true);
-                    }}
-                    style={{
-                        padding: "12px 14px",
-                        background: "#151828",
-                        borderTop: "1px solid var(--border)",
-                        display: "flex",
-                        gap: 8,
-                        alignItems: "center",
-                    }}
-                >
-                    <button
-                        type="button"
-                        onClick={toggleVoiceInput}
-                        className={`btn ${isListening ? "btn-danger pulse" : "btn-outline"}`}
-                        style={{
-                            padding: isListening ? "10px 14px" : "10px 14px",
-                            borderRadius: isListening ? 20 : "50%",
-                            borderColor: isListening ? "var(--red)" : "#ff6b35",
-                            fontWeight: isListening ? 800 : "normal",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                        }}
-                        title={isListening ? "Tap to Finish & Send" : "Tap and speak to AI Bot"}
-                    >
-                        {isListening ? "⏹️ Done" : "🎤"}
-                    </button>
-                    <input
-                        className="input"
-                        style={{ flex: 1, minWidth: 0 }}
-                        placeholder={isListening ? "Listening… speak now!" : "Chat or say 'confirm order', 'how much is my bill'…"}
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
-                    />
-                    <button
-                        type="submit"
-                        className="btn"
-                        style={{ background: "#ff6b35", color: "#fff" }}
-                        disabled={botThinking}
-                    >
-                        Send
-                    </button>
-                </form>
             </div>
 
             {/* ═══════════════════════════════════════════════════════════════════════
@@ -3211,13 +4084,33 @@ export default function TableKiosk() {
             )}
 
             {/* ═══════════════════════════════════════════════════════════════════════
-                MODAL B: KIDS CARTOON THEATRE (Requirement 5: Working Video Player)
+                MODAL B: KIDS CARTOON THEATRE (Requirement 5: Working Video Player — Coexists with Order/Bill/Joke Popups!)
                ═══════════════════════════════════════════════════════════════════════ */}
             {showCartoonModal && (
-                <div className="modal-overlay" onClick={() => setShowCartoonModal(false)}>
+                <div
+                    className="modal-overlay"
+                    style={{
+                        justifyContent:
+                            readyOrders.length > 0 || hasServedOrder || Boolean(jokeBanner) || Boolean(aiPopupCard)
+                                ? "flex-start"
+                                : "center",
+                        paddingLeft:
+                            readyOrders.length > 0 || hasServedOrder || Boolean(jokeBanner) || Boolean(aiPopupCard)
+                                ? 24
+                                : undefined,
+                        zIndex: 9995,
+                    }}
+                    onClick={() => setShowCartoonModal(false)}
+                >
                     <div
                         className="card modal"
-                        style={{ maxWidth: 820, width: "95%" }}
+                        style={{
+                            maxWidth:
+                                readyOrders.length > 0 || hasServedOrder || Boolean(jokeBanner) || Boolean(aiPopupCard)
+                                    ? "min(62vw, 760px)"
+                                    : 820,
+                            width: "95%",
+                        }}
                         onClick={(e) => e.stopPropagation()}
                     >
                         <div className="flex justify-between items-center" style={{ marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -3976,66 +4869,6 @@ export default function TableKiosk() {
                             </div>
                         </form>
                     </div>
-                </div>
-            )}
-            {/* Visual Status Toast Alert for noisy environments */}
-            {statusToast && (
-                <div
-                    style={{
-                        position: "fixed",
-                        top: 24,
-                        right: 24,
-                        zIndex: 9999,
-                        background: "#161a2d",
-                        border: `2px solid ${statusToast.color}`,
-                        borderRadius: 16,
-                        padding: "16px 20px",
-                        boxShadow: "0 16px 40px rgba(0,0,0,0.6)",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 14,
-                        maxWidth: 420,
-                        animation: "slideIn 0.3s ease-out",
-                    }}
-                >
-                    <div
-                        style={{
-                            fontSize: "2rem",
-                            background: "rgba(255,255,255,0.08)",
-                            borderRadius: "50%",
-                            width: 48,
-                            height: 48,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            flexShrink: 0,
-                        }}
-                    >
-                        {statusToast.icon}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 800, fontSize: "1rem", color: statusToast.color, marginBottom: 2 }}>
-                            {statusToast.title}
-                        </div>
-                        <div style={{ fontSize: "0.85rem", color: "#e2e8f0", lineHeight: 1.35 }}>
-                            {statusToast.message}
-                        </div>
-                    </div>
-                    <button
-                        onClick={() => setStatusToast(null)}
-                        style={{
-                            background: "transparent",
-                            border: "none",
-                            color: "#94a3b8",
-                            fontSize: "1.2rem",
-                            cursor: "pointer",
-                            padding: 4,
-                            lineHeight: 1,
-                        }}
-                        title="Dismiss"
-                    >
-                        ✕
-                    </button>
                 </div>
             )}
         </div>

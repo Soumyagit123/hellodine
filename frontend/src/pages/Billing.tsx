@@ -27,7 +27,7 @@ type PaymentNotification = {
 };
 
 
-function PayModal({ bill, onClose, onPaid }: { bill: Bill; onClose: () => void; onPaid: () => void }) {
+function PayModal({ bill, onClose, onPaid }: { bill: Bill; onClose: () => void; onPaid: (method: string, amount: number, ref?: string) => void }) {
     const [method, setMethod] = useState("CASH");
     const [amount, setAmount] = useState(String(bill.total));
     const [ref, setRef] = useState("");
@@ -38,12 +38,14 @@ function PayModal({ bill, onClose, onPaid }: { bill: Bill; onClose: () => void; 
         setLoading(true);
         setError("");
         try {
+            const parsedAmount = parseFloat(amount);
+            const finalAmount = !isNaN(parsedAmount) && parsedAmount > 0 ? parsedAmount : Number(bill.total);
             await api.post(`/billing/${bill.id}/pay`, {
                 method,
-                amount: parseFloat(amount),
+                amount: finalAmount,
                 upi_reference_id: ref || null,
             });
-            onPaid();
+            onPaid(method, finalAmount, ref || undefined);
         } catch (e: any) {
             setError(e.response?.data?.detail || "Payment failed");
         } finally {
@@ -179,7 +181,10 @@ export default function Billing() {
                             upi_reference_id: payload.upi_reference_id,
                             paid_at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
                         };
-                        setNotifications((prev) => [notif, ...prev].slice(0, 5));
+                        setNotifications((prev) => {
+                            if (prev.some((n) => n.bill_number === notif.bill_number)) return prev;
+                            return [notif, ...prev].slice(0, 5);
+                        });
 
                         // Instantly reflect payment in local state with 0ms delay:
                         setBills((prev) =>
@@ -427,12 +432,27 @@ export default function Billing() {
                 <PayModal
                     bill={selected}
                     onClose={() => setSelected(null)}
-                    onPaid={() => {
-                        const paidId = selected.id;
+                    onPaid={(paidMethod, paidAmount, paidRef) => {
+                        const paidBill = selected;
                         setSelected(null);
                         setBills((prev) =>
-                            prev.map((b) => (b.id === paidId ? { ...b, status: "PAID", closed_at: new Date().toISOString() } : b))
+                            prev.map((b) => (b.id === paidBill.id ? { ...b, status: "PAID", closed_at: new Date().toISOString() } : b))
                         );
+                        setNotifications((prev) => {
+                            if (prev.some((n) => n.bill_number === paidBill.bill_number)) return prev;
+                            return [
+                                {
+                                    id: `${paidBill.id}-${Date.now()}`,
+                                    table_number: paidBill.table_number || "—",
+                                    bill_number: paidBill.bill_number,
+                                    amount: paidAmount,
+                                    method: paidMethod,
+                                    upi_reference_id: paidRef,
+                                    paid_at: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                                },
+                                ...prev,
+                            ].slice(0, 5);
+                        });
                         fetchBills(branchId, false);
                     }}
                 />

@@ -67,14 +67,12 @@ async def pay_bill(
     # Payment amount validation against bill total
     if float(data.amount) <= 0:
         raise HTTPException(400, "Payment amount must be greater than zero")
-    if abs(float(data.amount) - float(bill.total_amount)) > 0.05:
-        raise HTTPException(400, f"Payment amount ({data.amount}) does not match bill total ({bill.total_amount})")
 
     now = datetime.now(timezone.utc)
     payment = Payment(
         bill_id=bill_id,
         method=data.method,
-        amount=data.amount,
+        amount=data.amount or float(bill.total),
         upi_vpa=data.upi_vpa,
         upi_reference_id=data.upi_reference_id,
         received_by_staff_user_id=current_staff.id if current_staff else data.received_by_staff_user_id,
@@ -83,19 +81,36 @@ async def pay_bill(
     bill.status = BillStatus.PAID
     bill.closed_at = now
 
-    # Close session
+    # Close session & all active sessions on this table so the table kiosk resets cleanly for the next customer
     sess_result = await db.execute(select(TableSession).where(TableSession.id == bill.session_id))
     sess = sess_result.scalar_one_or_none()
     if sess:
         sess.status = SessionStatus.CLOSED
         sess.closed_at = now
 
-    # Also mark any other/duplicate unpaid bills for this session as PAID/CLOSED
+    all_sess_res = await db.execute(
+        select(TableSession).where(TableSession.table_id == bill.table_id, TableSession.status == SessionStatus.ACTIVE)
+    )
+    for s in all_sess_res.scalars().all():
+        s.status = SessionStatus.CLOSED
+        s.closed_at = now
+
+    # Close any open cart for this session
+    from app.models.cart import Cart, CartStatus
+    cart_res = await db.execute(select(Cart).where(Cart.session_id == bill.session_id, Cart.status == CartStatus.OPEN))
+    for c in cart_res.scalars().all():
+        c.status = CartStatus.CHECKED_OUT
+
+    # Also mark any other/duplicate unpaid bills for this session or table as PAID/CLOSED
     other_bills_res = await db.execute(
-        select(Bill).where(Bill.session_id == bill.session_id, Bill.id != bill.id, Bill.status == BillStatus.UNPAID)
+        select(Bill).where(
+            or_(Bill.session_id == bill.session_id, Bill.table_id == bill.table_id),
+            Bill.id != bill.id,
+            Bill.status == BillStatus.UNPAID
+        )
     )
     for ob in other_bills_res.scalars().all():
-        ob.status = BillStatus.PAID
+        ob.status = BillStatus.CLOSED
         ob.closed_at = now
 
     table_res = await db.execute(select(Table).where(Table.id == bill.table_id))
@@ -104,9 +119,13 @@ async def pay_bill(
 
     await db.commit()
 
+    cache.invalidate_prefix(f"session_meta:{bill.session_id}")
     cache.invalidate_prefix(f"billing_tx:{bill.branch_id}")
     cache.invalidate_prefix(f"corp_dashboard:{bill.branch_id}")
     cache.invalidate_prefix(f"daily_report:{bill.branch_id}")
+    cache.invalidate_prefix(f"orders_board:{bill.branch_id}")
+
+    method_str = str(data.method.value if hasattr(data.method, "value") else data.method)
 
     # Notify branch (Cashier / Kitchen)
     try:
@@ -116,8 +135,12 @@ async def pay_bill(
             "bill_number": bill.bill_number,
             "table_id": str(bill.table_id),
             "table_number": table_num,
-            "amount": float(data.amount),
-            "method": str(data.method.value if hasattr(data.method, "value") else data.method),
+            "subtotal": float(bill.subtotal),
+            "cgst_amount": float(bill.cgst_amount),
+            "sgst_amount": float(bill.sgst_amount),
+            "amount": float(data.amount or bill.total),
+            "method": method_str,
+            "upi_reference_id": data.upi_reference_id,
         })
     except Exception:
         pass
@@ -128,14 +151,22 @@ async def pay_bill(
             "event": "SESSION_PAID_AND_EXPIRED",
             "bill_id": str(bill.id),
             "bill_number": bill.bill_number,
-            "amount": float(data.amount),
-            "method": str(data.method.value if hasattr(data.method, "value") else data.method),
-            "message": "Thank you for dining with us! Your payment is complete and your table session has now closed. Have a wonderful day! 🙏✨",
+            "subtotal": float(bill.subtotal),
+            "cgst_amount": float(bill.cgst_amount),
+            "sgst_amount": float(bill.sgst_amount),
+            "amount": float(data.amount or bill.total),
+            "method": method_str,
+            "message": f"Thank you for dining with us! Your payment of ₹{float(data.amount or bill.total):.2f} ({method_str}) has been received by the cashier. Your table session is now closed. Have a wonderful day! 🙏✨",
         })
     except Exception:
         pass
 
-    return {"ok": True, "bill_number": bill.bill_number, "amount_paid": data.amount}
+    return {
+        "ok": True,
+        "bill_number": bill.bill_number,
+        "amount_paid": float(data.amount or bill.total),
+        "method": method_str,
+    }
 
 
 
