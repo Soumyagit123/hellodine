@@ -248,12 +248,25 @@ export default function OrdersBoard() {
     const [userRole, setUserRole] = useState<string>("");
     const [birthdayBanner, setBirthdayBanner] = useState<{ table_number: string; birthday_name: string } | null>(null);
     const [advancingId, setAdvancingId] = useState<string | null>(null);
+    // Served column filter: Cashier defaults to "today", Admins default to "all"
+    const [servedFilterMode, setServedFilterMode] = useState<"today" | "all" | "date">("today");
+    const [servedFilterDate, setServedFilterDate] = useState<string>(() => new Date().toLocaleDateString("en-CA"));
     const wsRef = useRef<WebSocket | null>(null);
+    const servedFilterParamRef = useRef<string>("today");
 
     useEffect(() => {
         const staff = JSON.parse(localStorage.getItem("hd_staff") || "{}");
         if (staff.role) {
             setUserRole(staff.role);
+            // Admins (BRANCH_ADMIN, SUPER_ADMIN, SYSTEM_ADMIN) default to seeing ALL served orders;
+            // Cashier defaults to seeing TODAY's served orders
+            if (["BRANCH_ADMIN", "SUPER_ADMIN", "SYSTEM_ADMIN"].includes(staff.role)) {
+                setServedFilterMode("all");
+                servedFilterParamRef.current = "all";
+            } else {
+                setServedFilterMode("today");
+                servedFilterParamRef.current = "today";
+            }
         }
         if (staff.branch_id) {
             setBranchId(staff.branch_id);
@@ -262,11 +275,26 @@ export default function OrdersBoard() {
         }
     }, [selectedBranchId]);
 
-    async function fetchOrders() {
+    function getServedFilterParam(mode = servedFilterMode, dateVal = servedFilterDate): string {
+        if (mode === "all") return "all";
+        if (mode === "date" && dateVal) return dateVal;
+        return "today";
+    }
+
+    async function fetchOrders(customServedFilter?: string) {
         if (!branchId) return;
-        const res = await api.get(`/orders?branch_id=${branchId}`);
+        const sf = customServedFilter ?? servedFilterParamRef.current;
+        const res = await api.get(`/orders?branch_id=${branchId}&served_filter=${encodeURIComponent(sf)}`);
         setOrders(res.data);
     }
+
+    useEffect(() => {
+        const param = getServedFilterParam(servedFilterMode, servedFilterDate);
+        servedFilterParamRef.current = param;
+        if (branchId) {
+            fetchOrders(param);
+        }
+    }, [servedFilterMode, servedFilterDate]);
 
     useEffect(() => {
         if (!branchId) return;
@@ -340,6 +368,25 @@ export default function OrdersBoard() {
 
     const activeOrders = orders.filter((o) => o.status !== "SERVED" && o.status !== "CANCELLED");
 
+    // Helper: check if an order's created_at timestamp matches the selected Served filter
+    const todayDateStr = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in local timezone
+    function matchesServedFilter(createdAt?: string): boolean {
+        if (servedFilterMode === "all") return true;
+        if (!createdAt) return false;
+        const d = new Date(createdAt);
+        if (isNaN(d.getTime())) return false;
+        const orderDateStr = d.toLocaleDateString("en-CA");
+        if (servedFilterMode === "date") {
+            return orderDateStr === (servedFilterDate || todayDateStr);
+        }
+        return orderDateStr === todayDateStr;
+    }
+
+    // Chef (KITCHEN) does not see the SERVED column; Cashier and Admins see SERVED with filter controls
+    const visibleColumns = userRole === "KITCHEN"
+        ? COLUMNS.filter((col) => col.status !== "SERVED")
+        : COLUMNS;
+
     function handleAdvance(orderId: string, currentStatus: string, nextStatus: string) {
         if (advancingId === orderId) return;
         setAdvancingId(orderId);
@@ -374,7 +421,7 @@ export default function OrdersBoard() {
                 <div className="flex gap-2">
                     <div className="pulse" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--green)", margin: "auto 0" }} />
                     <span className="text-sm text-muted">Live</span>
-                    <button className="btn btn-outline btn-sm" onClick={fetchOrders}>Refresh</button>
+                    <button className="btn btn-outline btn-sm" onClick={() => fetchOrders()}>Refresh</button>
                 </div>
             </div>
 
@@ -403,16 +450,106 @@ export default function OrdersBoard() {
             )}
 
 
-            <div className="kanban">
-                {COLUMNS.map((col) => {
-                    const colOrders = orders.filter((o) => o.status === col.status);
+            <div
+                className="kanban"
+                style={{
+                    gridTemplateColumns: `repeat(${visibleColumns.length}, minmax(0, 1fr))`,
+                }}
+            >
+                {visibleColumns.map((col) => {
+                    const colOrders = orders.filter((o) => {
+                        if (o.status !== col.status) return false;
+                        if (col.status === "SERVED") {
+                            return matchesServedFilter(o.created_at);
+                        }
+                        return true;
+                    });
                     return (
                         <div key={col.status} className="kanban-col">
-                            <div className="kanban-col-header">
-                                <span style={{ color: col.color }}>{col.label}</span>
-                                <span style={{ background: col.color, color: "#0f0f1a", borderRadius: "999px", padding: "1px 8px", fontSize: "0.75rem", fontWeight: 700 }}>
-                                    {colOrders.length}
-                                </span>
+                            <div
+                                className="kanban-col-header"
+                                style={{
+                                    flexDirection: col.status === "SERVED" ? "column" : "row",
+                                    alignItems: col.status === "SERVED" ? "stretch" : "center",
+                                    gap: col.status === "SERVED" ? 8 : 0,
+                                }}
+                            >
+                                <div className="flex items-center justify-between" style={{ width: "100%" }}>
+                                    <span style={{ color: col.color }}>
+                                        {col.status === "SERVED"
+                                            ? servedFilterMode === "all"
+                                                ? "🍽️ Served (All)"
+                                                : servedFilterMode === "date"
+                                                ? `🍽️ Served (${servedFilterDate})`
+                                                : "🍽️ Served (Today)"
+                                            : col.label}
+                                    </span>
+                                    <span style={{ background: col.color, color: "#0f0f1a", borderRadius: "999px", padding: "1px 8px", fontSize: "0.75rem", fontWeight: 700 }}>
+                                        {colOrders.length}
+                                    </span>
+                                </div>
+                                {col.status === "SERVED" && (
+                                    <div
+                                        style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 4,
+                                            flexWrap: "wrap",
+                                            paddingTop: 4,
+                                            borderTop: "1px solid rgba(255,255,255,0.06)",
+                                        }}
+                                    >
+                                        <button
+                                            type="button"
+                                            className="btn btn-sm"
+                                            style={{
+                                                padding: "3px 8px",
+                                                fontSize: "0.7rem",
+                                                borderRadius: 6,
+                                                background: servedFilterMode === "today" ? "var(--accent)" : "rgba(255,255,255,0.06)",
+                                                color: servedFilterMode === "today" ? "#fff" : "var(--text-muted)",
+                                            }}
+                                            onClick={() => setServedFilterMode("today")}
+                                        >
+                                            Today
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn btn-sm"
+                                            style={{
+                                                padding: "3px 8px",
+                                                fontSize: "0.7rem",
+                                                borderRadius: 6,
+                                                background: servedFilterMode === "all" ? "var(--accent)" : "rgba(255,255,255,0.06)",
+                                                color: servedFilterMode === "all" ? "#fff" : "var(--text-muted)",
+                                            }}
+                                            onClick={() => setServedFilterMode("all")}
+                                        >
+                                            All
+                                        </button>
+                                        <input
+                                            type="date"
+                                            value={servedFilterDate}
+                                            max={todayDateStr}
+                                            onChange={(e) => {
+                                                setServedFilterDate(e.target.value);
+                                                setServedFilterMode("date");
+                                            }}
+                                            style={{
+                                                flex: 1,
+                                                minWidth: 110,
+                                                padding: "2px 6px",
+                                                fontSize: "0.7rem",
+                                                borderRadius: 6,
+                                                background: servedFilterMode === "date" ? "rgba(108,99,255,0.2)" : "var(--bg-base)",
+                                                border: servedFilterMode === "date" ? "1px solid var(--accent)" : "1px solid var(--border)",
+                                                color: "var(--text)",
+                                                colorScheme: "dark",
+                                            }}
+                                            title="Filter served orders by date"
+                                        />
+                                    </div>
+                                )}
                             </div>
                             <div className="kanban-col-body">
                                 {colOrders.length === 0 && (

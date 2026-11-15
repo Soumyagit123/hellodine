@@ -1,8 +1,9 @@
 """Orders router — /api/orders  (kitchen board + WebSocket)"""
 import uuid
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_, and_
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 from typing import Optional
@@ -74,6 +75,7 @@ async def place_order(data: PlaceOrderRequest, db: AsyncSession = Depends(get_db
 async def list_orders(
     branch_id: uuid.UUID,
     status: Optional[OrderStatus] = None,
+    served_filter: Optional[str] = None,
     current_staff: StaffUser = Depends(get_current_staff),
     db: AsyncSession = Depends(get_db),
 ):
@@ -83,7 +85,14 @@ async def list_orders(
         if current_staff.branch_id and current_staff.branch_id != branch_id:
             raise HTTPException(403, "Access denied: unauthorized for this branch")
 
-    cache_key = f"orders_board:{branch_id}:{status.value if status else 'all'}"
+    # Calculate IST date window for served_filter ("today", "all", or "YYYY-MM-DD")
+    tz_ist = timezone(timedelta(hours=5, minutes=30))
+    today_ist = datetime.now(tz_ist).date()
+
+    # Default filter mode: Cashier defaults to "today", Admins default to "all"
+    effective_served_filter = (served_filter or ("today" if user_role == "CASHIER" else "all")).strip()
+
+    cache_key = f"orders_board:{branch_id}:{user_role}:{effective_served_filter}:{today_ist.isoformat()}:{status.value if status else 'all'}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -91,12 +100,59 @@ async def list_orders(
     q = select(Order).where(Order.branch_id == branch_id)
     if status:
         q = q.where(Order.status == status)
+    elif user_role == "KITCHEN":
+        # Chef (KITCHEN) only sees active kitchen preparation & ready orders (hide SERVED & CANCELLED)
+        q = q.where(Order.status.in_([
+            OrderStatus.NEW,
+            OrderStatus.ACCEPTED,
+            OrderStatus.PREPARING,
+            OrderStatus.READY,
+        ]))
+    else:
+        # Cashier, Branch Admin, Super Admin, System Admin:
+        # Show all active orders (NEW, ACCEPTED, PREPARING, READY) PLUS filtered SERVED orders
+        if effective_served_filter.lower() == "all":
+            q = q.where(Order.status.in_([
+                OrderStatus.NEW,
+                OrderStatus.ACCEPTED,
+                OrderStatus.PREPARING,
+                OrderStatus.READY,
+                OrderStatus.SERVED,
+            ]))
+        else:
+            if effective_served_filter.lower() == "today":
+                target_date = today_ist
+            else:
+                try:
+                    target_date = datetime.strptime(effective_served_filter, "%Y-%m-%d").date()
+                except Exception:
+                    target_date = today_ist
+
+            start_of_day = datetime.combine(target_date, datetime.min.time(), tzinfo=tz_ist).astimezone(timezone.utc)
+            end_of_day = datetime.combine(target_date, datetime.max.time(), tzinfo=tz_ist).astimezone(timezone.utc)
+
+            q = q.where(
+                or_(
+                    Order.status.in_([
+                        OrderStatus.NEW,
+                        OrderStatus.ACCEPTED,
+                        OrderStatus.PREPARING,
+                        OrderStatus.READY,
+                    ]),
+                    and_(
+                        Order.status == OrderStatus.SERVED,
+                        Order.created_at >= start_of_day,
+                        Order.created_at <= end_of_day,
+                    ),
+                )
+            )
+
     q = q.options(
         selectinload(Order.table),
         selectinload(Order.items).selectinload(OrderItem.menu_item),
         selectinload(Order.items).selectinload(OrderItem.variant),
         selectinload(Order.items).selectinload(OrderItem.modifiers)
-    ).order_by(Order.created_at.desc()).limit(60)
+    ).order_by(Order.created_at.desc()).limit(250)
     result = await db.execute(q)
     orders = result.scalars().all()
 

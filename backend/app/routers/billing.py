@@ -227,22 +227,23 @@ async def daily_report(branch_id: uuid.UUID, date: str, db: AsyncSession = Depen
 @router.get("/report/dashboard")
 async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Comprehensive Corporate Analytics Dashboard API."""
-    cache_key = f"corp_dashboard:{branch_id}"
+    from datetime import date as dt_date, datetime, timezone, timedelta
+
+    tz_ist = timezone(timedelta(hours=5, minutes=30))
+    today = datetime.now(tz_ist).date()
+
+    cache_key = f"corp_dashboard:{branch_id}:{today.isoformat()}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
-    from datetime import date as dt_date, datetime, timezone, timedelta
-    
-    today = dt_date.today()
-    
-    # 1. Define Time Ranges (UTC Aware)
-    start_of_today = datetime.combine(today, datetime.min.time()).astimezone(timezone.utc)
-    end_of_today = datetime.combine(today, datetime.max.time()).astimezone(timezone.utc)
-    
-    start_of_month = datetime.combine(today.replace(day=1), datetime.min.time()).astimezone(timezone.utc)
-    
-    # 2. Base Query helper
+    # 1. Define Time Ranges (IST -> UTC Aware)
+    start_of_today = datetime.combine(today, datetime.min.time(), tzinfo=tz_ist).astimezone(timezone.utc)
+    end_of_today = datetime.combine(today, datetime.max.time(), tzinfo=tz_ist).astimezone(timezone.utc)
+
+    start_of_month = datetime.combine(today.replace(day=1), datetime.min.time(), tzinfo=tz_ist).astimezone(timezone.utc)
+
+    # 2. Base Query helper (includes both Bill count and actual Order count)
     async def get_metrics(start_time=None, end_time=None):
         q = select(
             func.count(Bill.id).label("total_bills"),
@@ -250,14 +251,29 @@ async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(g
             func.sum(Bill.cgst_amount).label("total_cgst"),
             func.sum(Bill.sgst_amount).label("total_sgst"),
         ).where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID)
-        
-        if start_time: q = q.where(Bill.created_at >= start_time)
-        if end_time: q = q.where(Bill.created_at <= end_time)
-            
+
+        if start_time:
+            q = q.where(Bill.created_at >= start_time)
+        if end_time:
+            q = q.where(Bill.created_at <= end_time)
+
         res = await db.execute(q)
         row = res.one()
+
+        oq = select(func.count(Order.id).label("total_orders")).where(
+            Order.branch_id == branch_id,
+            Order.status != OrderStatus.CANCELLED,
+        )
+        if start_time:
+            oq = oq.where(Order.created_at >= start_time)
+        if end_time:
+            oq = oq.where(Order.created_at <= end_time)
+        ores = await db.execute(oq)
+        orow = ores.one()
+
         return {
             "total_bills": row.total_bills or 0,
+            "total_orders": orow.total_orders or 0,
             "total_revenue": float(row.total_revenue or 0),
             "total_cgst": float(row.total_cgst or 0),
             "total_sgst": float(row.total_sgst or 0),
@@ -272,19 +288,24 @@ async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(g
     trend_data = []
     for i in range(6, -1, -1):
         d = today - timedelta(days=i)
-        st = datetime.combine(d, datetime.min.time()).astimezone(timezone.utc)
-        et = datetime.combine(d, datetime.max.time()).astimezone(timezone.utc)
-        
+        st = datetime.combine(d, datetime.min.time(), tzinfo=tz_ist).astimezone(timezone.utc)
+        et = datetime.combine(d, datetime.max.time(), tzinfo=tz_ist).astimezone(timezone.utc)
+
         # Single day fast query
         r = await db.execute(
             select(func.sum(Bill.total).label("rev"), func.count(Bill.id).label("cnt"))
             .where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID, Bill.created_at >= st, Bill.created_at <= et)
         )
         day_row = r.one()
+        or_day = await db.execute(
+            select(func.count(Order.id).label("ocnt"))
+            .where(Order.branch_id == branch_id, Order.status != OrderStatus.CANCELLED, Order.created_at >= st, Order.created_at <= et)
+        )
+        oday_row = or_day.one()
         trend_data.append({
             "date": d.strftime("%b %d"),
             "revenue": float(day_row.rev or 0),
-            "orders": day_row.cnt or 0
+            "orders": oday_row.ocnt or day_row.cnt or 0
         })
 
     # 5. Generate 6-Month Revenue Trend (Monthly Trend)
@@ -300,21 +321,54 @@ async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(g
 
         import calendar
         _, last_day = calendar.monthrange(target_year, target_month)
-        m_start = datetime(target_year, target_month, 1, 0, 0, 0).astimezone(timezone.utc)
-        m_end = datetime(target_year, target_month, last_day, 23, 59, 59).astimezone(timezone.utc)
+        m_start = datetime(target_year, target_month, 1, 0, 0, 0, tzinfo=tz_ist).astimezone(timezone.utc)
+        m_end = datetime(target_year, target_month, last_day, 23, 59, 59, tzinfo=tz_ist).astimezone(timezone.utc)
 
         m_res = await db.execute(
             select(func.sum(Bill.total).label("rev"), func.count(Bill.id).label("cnt"))
             .where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID, Bill.created_at >= m_start, Bill.created_at <= m_end)
         )
         m_row = m_res.one()
+        om_res = await db.execute(
+            select(func.count(Order.id).label("ocnt"))
+            .where(Order.branch_id == branch_id, Order.status != OrderStatus.CANCELLED, Order.created_at >= m_start, Order.created_at <= m_end)
+        )
+        om_row = om_res.one()
         monthly_trend.append({
             "month": m_start.strftime("%b %Y"),
             "revenue": float(m_row.rev or 0),
-            "orders": m_row.cnt or 0
+            "orders": om_row.ocnt or m_row.cnt or 0
         })
 
-    # 6. Top 5 Best Selling Food Items (Ranked by Quantity Sold, with Revenue)
+    # 6a. Today's Top 5 Best Selling Food Items (Ranked by Quantity Sold Today, with Revenue)
+    today_top_items_res = await db.execute(
+        select(
+            MenuItem.name.label("name"),
+            func.sum(OrderItem.quantity).label("quantity_sold"),
+            func.sum(OrderItem.line_total).label("revenue_generated")
+        )
+        .join(OrderItem, OrderItem.menu_item_id == MenuItem.id)
+        .join(Order, Order.id == OrderItem.order_id)
+        .where(
+            Order.branch_id == branch_id,
+            Order.status != OrderStatus.CANCELLED,
+            Order.created_at >= start_of_today,
+            Order.created_at <= end_of_today,
+        )
+        .group_by(MenuItem.id, MenuItem.name)
+        .order_by(func.sum(OrderItem.quantity).desc(), func.sum(OrderItem.line_total).desc())
+        .limit(5)
+    )
+    today_top_selling_items = [
+        {
+            "name": row.name,
+            "quantity_sold": int(row.quantity_sold or 0),
+            "revenue_generated": float(row.revenue_generated or 0)
+        }
+        for row in today_top_items_res.all()
+    ]
+
+    # 6b. All-Time Top 5 Best Selling Food Items (Ranked by Quantity Sold, with Revenue)
     top_items_res = await db.execute(
         select(
             MenuItem.name.label("name"),
@@ -367,6 +421,7 @@ async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(g
         },
         "trend_7d": trend_data,
         "monthly_trend": monthly_trend,
+        "today_top_selling_items": today_top_selling_items,
         "top_selling_items": top_selling_items,
         "payment_breakdown": payment_breakdown,
     }

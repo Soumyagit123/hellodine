@@ -20,6 +20,7 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarEleme
 
 type Metrics = {
     total_bills: number;
+    total_orders?: number;
     total_revenue: number;
     total_cgst: number;
     total_sgst: number;
@@ -59,6 +60,7 @@ type DashboardData = {
     };
     trend_7d: TrendData[];
     monthly_trend?: MonthlyTrendData[];
+    today_top_selling_items?: TopSellingItem[];
     top_selling_items?: TopSellingItem[];
     payment_breakdown?: PaymentBreakdown[];
 };
@@ -197,20 +199,39 @@ export default function DailyReport() {
                 <button className="btn btn-outline btn-sm" onClick={fetchDashboard}>🔄 Refresh Data</button>
             </div>
 
-            {/* KPI ROW 1: PRIMARY 4 TILES */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 16 }}>
-                {/* TODAY */}
+            {/* KPI ROW 1: PRIMARY TILES (Revenue + Daily Orders & Total Orders) */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 16 }}>
+                {/* TODAY REVENUE */}
                 <div className="card" style={{ padding: "14px 18px", background: "linear-gradient(145deg, rgba(44,44,46,0.6) 0%, rgba(28,28,30,0.8) 100%)", border: "1px solid rgba(35, 209, 139, 0.25)" }}>
                     <div className="flex justify-between items-start">
                         <div>
                             <p className="text-muted" style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: 1, fontWeight: 600, marginBottom: 2 }}>Today's Revenue</p>
-                            <h2 style={{ fontSize: "1.9rem", fontWeight: 800, color: "var(--green)", margin: 0 }}>{fmt(data.today.total_revenue)}</h2>
+                            <h2 style={{ fontSize: "1.85rem", fontWeight: 800, color: "var(--green)", margin: 0 }}>{fmt(data.today.total_revenue)}</h2>
                         </div>
                         <div style={{ background: "rgba(35, 209, 139, 0.15)", color: "var(--green)", padding: "3px 8px", borderRadius: 20, fontSize: "0.7rem", fontWeight: 700 }}>LIVE</div>
                     </div>
                     <div style={{ marginTop: 10, borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: 8, display: "flex", justifyContent: "space-between" }}>
-                        <span className="text-muted" style={{ fontSize: "0.8rem" }}>Orders Completed</span>
+                        <span className="text-muted" style={{ fontSize: "0.8rem" }}>Paid Bills Today</span>
                         <span style={{ fontWeight: 700, fontSize: "0.85rem" }}>{data.today.total_bills}</span>
+                    </div>
+                </div>
+
+                {/* DAILY ORDERS & TOTAL ORDERS */}
+                <div className="card" style={{ padding: "14px 18px", border: "1px solid rgba(84, 160, 255, 0.25)" }}>
+                    <div className="flex justify-between items-start">
+                        <div>
+                            <p className="text-muted" style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: 1, fontWeight: 600, marginBottom: 2 }}>Daily Orders (Today)</p>
+                            <h2 style={{ fontSize: "1.85rem", fontWeight: 800, color: "var(--blue)", margin: 0 }}>
+                                {data.today.total_orders ?? data.today.total_bills}
+                            </h2>
+                        </div>
+                        <div style={{ background: "rgba(84, 160, 255, 0.15)", color: "var(--blue)", padding: "3px 8px", borderRadius: 20, fontSize: "0.7rem", fontWeight: 700 }}>TODAY</div>
+                    </div>
+                    <div style={{ marginTop: 10, borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: 8, display: "flex", justifyContent: "space-between" }}>
+                        <span className="text-muted" style={{ fontSize: "0.8rem" }}>Total All-Time Orders</span>
+                        <span style={{ fontWeight: 800, fontSize: "0.88rem", color: "var(--text)" }}>
+                            {data.all_time.total_orders ?? data.all_time.total_bills}
+                        </span>
                     </div>
                 </div>
 
@@ -220,7 +241,7 @@ export default function DailyReport() {
                     <h2 style={{ fontSize: "1.8rem", fontWeight: 700, margin: 0 }}>{fmt(data.month.total_revenue)}</h2>
                     <div style={{ marginTop: 10, borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: 8, display: "flex", justifyContent: "space-between" }}>
                         <span className="text-muted" style={{ fontSize: "0.8rem" }}>Total MTD Orders</span>
-                        <span style={{ fontWeight: 700, fontSize: "0.85rem" }}>{data.month.total_bills}</span>
+                        <span style={{ fontWeight: 700, fontSize: "0.85rem" }}>{data.month.total_orders ?? data.month.total_bills}</span>
                     </div>
                 </div>
 
@@ -229,7 +250,7 @@ export default function DailyReport() {
                     <p className="text-muted" style={{ fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: 1, fontWeight: 600, marginBottom: 2 }}>All-Time Revenue</p>
                     <h2 style={{ fontSize: "1.8rem", fontWeight: 700, margin: 0, color: "var(--accent)" }}>{fmt(data.all_time.total_revenue)}</h2>
                     <div style={{ marginTop: 10, borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: 8, display: "flex", justifyContent: "space-between" }}>
-                        <span className="text-muted" style={{ fontSize: "0.8rem" }}>Lifetime Orders</span>
+                        <span className="text-muted" style={{ fontSize: "0.8rem" }}>Total Paid Bills</span>
                         <span style={{ fontWeight: 700, fontSize: "0.85rem" }}>{data.all_time.total_bills}</span>
                     </div>
                 </div>
@@ -315,16 +336,74 @@ export default function DailyReport() {
                 </div>
             </div>
 
-            {/* ROW 3: DUAL INSIGHTS (LEFT: TOP 5 BEST SELLERS, RIGHT: PAYMENT CHANNELS) */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 16 }}>
-                {/* TOP 5 BEST SELLERS */}
+            {/* ROW 3: INSIGHTS (TODAY'S TOP 5 BEST SELLERS, ALL-TIME TOP 5 BEST SELLERS, PAYMENT CHANNELS) */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+                {/* TODAY'S TOP 5 BEST SELLERS */}
+                <div className="card" style={{ padding: "18px 20px", border: "1px solid rgba(35, 209, 139, 0.2)" }}>
+                    <div className="flex justify-between items-center mb-2">
+                        <div>
+                            <h3 style={{ margin: 0, fontSize: "1.05rem", fontWeight: 700 }}>🔥 Today's Top 5 Best Selling Items</h3>
+                            <span className="text-xs text-muted">Most ordered dishes today</span>
+                        </div>
+                        <span className="badge badge-ready" style={{ fontSize: "0.7rem", padding: "2px 8px" }}>Today</span>
+                    </div>
+                    {(!data.today_top_selling_items || data.today_top_selling_items.length === 0) ? (
+                        <div className="text-muted text-sm" style={{ padding: "20px 0", textAlign: "center" }}>No items ordered today yet</div>
+                    ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
+                            {data.today_top_selling_items.map((item, idx) => (
+                                <div key={idx} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.04)" }}>
+                                    <div className="flex items-center gap-3">
+                                        <span style={{
+                                            width: 24,
+                                            height: 24,
+                                            borderRadius: "50%",
+                                            background: idx === 0 ? "rgba(35, 209, 139, 0.22)" : "rgba(255,255,255,0.08)",
+                                            color: idx === 0 ? "var(--green)" : "var(--text)",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                            fontWeight: 800,
+                                            fontSize: "0.75rem"
+                                        }}>
+                                            #{idx + 1}
+                                        </span>
+                                        <div>
+                                            <div style={{ fontWeight: 600, fontSize: "0.92rem", color: "var(--text)" }}>{item.name}</div>
+                                            <div className="flex items-center gap-2 mt-0.5">
+                                                <span style={{
+                                                    background: "rgba(35, 209, 139, 0.15)",
+                                                    color: "var(--green)",
+                                                    padding: "1px 6px",
+                                                    borderRadius: 4,
+                                                    fontSize: "0.72rem",
+                                                    fontWeight: 700
+                                                }}>
+                                                    {item.quantity_sold} {item.quantity_sold === 1 ? 'item sold today' : 'items sold today'}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div style={{ textAlign: "right" }}>
+                                        <div style={{ fontWeight: 800, color: "var(--green)", fontSize: "0.95rem" }}>
+                                            {fmt(item.revenue_generated)}
+                                        </div>
+                                        <span className="text-xs text-muted">revenue</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* ALL-TIME TOP 5 BEST SELLERS */}
                 <div className="card" style={{ padding: "18px 20px" }}>
                     <div className="flex justify-between items-center mb-2">
                         <div>
-                            <h3 style={{ margin: 0, fontSize: "1.05rem", fontWeight: 700 }}>🏆 Top 5 Best Selling Items</h3>
-                            <span className="text-xs text-muted">Ranked by most quantity ordered</span>
+                            <h3 style={{ margin: 0, fontSize: "1.05rem", fontWeight: 700 }}>🏆 All-Time Top 5 Best Selling Items</h3>
+                            <span className="text-xs text-muted">Ranked by lifetime quantity ordered</span>
                         </div>
-                        <span className="badge badge-primary" style={{ fontSize: "0.7rem", padding: "2px 8px" }}>Most Popular</span>
+                        <span className="badge badge-primary" style={{ fontSize: "0.7rem", padding: "2px 8px" }}>All-Time</span>
                     </div>
                     {(!data.top_selling_items || data.top_selling_items.length === 0) ? (
                         <div className="text-muted text-sm" style={{ padding: "20px 0", textAlign: "center" }}>No sales recorded yet</div>
