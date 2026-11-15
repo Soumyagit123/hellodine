@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 from app.database import get_db
@@ -49,14 +49,14 @@ async def _serialize_cart_fast(cart: Cart, db: AsyncSession) -> dict:
 class AddItemRequest(BaseModel):
     session_id: uuid.UUID
     menu_item_id: uuid.UUID
-    quantity: int = 1
+    quantity: int = Field(default=1, ge=1, le=50)
     variant_id: Optional[uuid.UUID] = None
     modifier_ids: Optional[list[uuid.UUID]] = None
-    notes: Optional[str] = None
+    notes: Optional[str] = Field(default=None, max_length=255)
 
 
 class UpdateQuantityRequest(BaseModel):
-    quantity: int
+    quantity: int = Field(..., ge=0, le=50)
 
 
 @router.post("/add")

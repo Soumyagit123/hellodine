@@ -139,9 +139,10 @@ async def add_item_to_cart(
         await db.flush()
 
         if modifier_ids:
+            mod_result = await db.execute(select(MenuModifier).where(MenuModifier.id.in_(modifier_ids)))
+            mods_by_id = {m.id: m for m in mod_result.scalars().all()}
             for mod_id in modifier_ids:
-                mod_result = await db.execute(select(MenuModifier).where(MenuModifier.id == mod_id))
-                mod = mod_result.scalar_one_or_none()
+                mod = mods_by_id.get(mod_id)
                 if mod:
                     cim = CartItemModifier(
                         cart_item_id=cart_item.id,

@@ -136,12 +136,55 @@ async def list_restaurants(
 
 
 @router.get("/restaurants/{restaurant_id}")
-async def get_restaurant(restaurant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_restaurant(
+    restaurant_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
+):
+    if current_staff.role != StaffRole.SYSTEM_ADMIN and str(current_staff.restaurant_id) != str(restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to another restaurant's configuration")
+    cache_key = f"restaurant_info:{restaurant_id}:{current_staff.role.value}"
+    cached = await cache.aget(cache_key)
+    if cached is not None:
+        return cached
     result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
     r = result.scalar_one_or_none()
     if not r:
         raise HTTPException(404, "Restaurant not found")
+    # Never expose sensitive WhatsApp tokens/secrets to non-System-Admin callers
+    if current_staff.role != StaffRole.SYSTEM_ADMIN:
+        out = {
+            "id": r.id,
+            "name": r.name,
+            "gstin": r.gstin,
+            "fssai_license_number": r.fssai_license_number,
+            "whatsapp_phone_number_id": r.whatsapp_phone_number_id,
+            "whatsapp_display_number": r.whatsapp_display_number,
+            "merchant_upi_id": r.merchant_upi_id,
+            "subscription_plan": r.subscription_plan,
+            "subscription_status": r.subscription_status,
+            "subscription_expires_at": r.subscription_expires_at,
+            "pending_renewal_plan": r.pending_renewal_plan,
+            "pending_renewal_utr": r.pending_renewal_utr,
+            "pending_renewal_amount": r.pending_renewal_amount,
+            "max_branches": r.max_branches,
+            "is_active": r.is_active,
+            "created_at": r.created_at,
+        }
+        cache.set(cache_key, out, ttl_seconds=86400)
+        return out
+    cache.set(cache_key, r, ttl_seconds=86400)
     return r
+
+
+# Fields that ONLY SYSTEM_ADMIN is allowed to modify
+_SYSTEM_ADMIN_ONLY_RESTAURANT_FIELDS = {
+    "subscription_plan",
+    "subscription_status",
+    "subscription_expires_at",
+    "max_branches",
+    "is_active",
+}
 
 
 @router.patch("/restaurants/{restaurant_id}")
@@ -163,12 +206,18 @@ async def update_restaurant(
 
     update_data = data.model_dump(exclude_unset=True)
     for key, value in update_data.items():
+        if key in _SYSTEM_ADMIN_ONLY_RESTAURANT_FIELDS and current_staff.role != StaffRole.SYSTEM_ADMIN:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Only SaaS System Admin can modify '{key}'",
+            )
         setattr(r, key, value)
 
     await db.commit()
     await db.refresh(r)
     cache.invalidate_prefix("admin_all_restaurants")
-    cache.invalidate_prefix(f"static_menu:")
+    cache.invalidate_prefix(f"restaurant_info:{restaurant_id}")
+    cache.invalidate_prefix("static_menu:")
     return r
 
 
@@ -254,8 +303,14 @@ async def request_subscription_renewal(
     restaurant_id: uuid.UUID,
     data: SubscriptionRenewalRequest,
     db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
 ):
     """Restaurant owner submits UPI UTR after scanning SaaS Owner's QR code."""
+    if current_staff.role not in (StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only restaurant owners can request subscription renewal")
+    if current_staff.role == StaffRole.SUPER_ADMIN and str(current_staff.restaurant_id) != str(restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied: cannot submit renewal for another restaurant")
+
     result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
     r = result.scalar_one_or_none()
     if not r:
@@ -266,6 +321,7 @@ async def request_subscription_renewal(
     r.pending_renewal_amount = data.amount
     await db.commit()
     await db.refresh(r)
+    cache.invalidate_prefix(f"restaurant_info:{restaurant_id}")
     return {"ok": True, "message": "Renewal payment submitted! Your plan will be updated shortly."}
 
 
@@ -297,6 +353,8 @@ async def approve_subscription_renewal(
 
     await db.commit()
     await db.refresh(r)
+    cache.invalidate_prefix(f"restaurant_info:{restaurant_id}")
+    cache.invalidate_prefix("admin_all_restaurants")
     return r
 
 
@@ -305,6 +363,8 @@ async def approve_subscription_renewal(
 async def create_branch(data: BranchCreate, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
     if current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN]:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only owners or system admins can create branches")
+    if current_staff.role == StaffRole.SUPER_ADMIN and str(data.restaurant_id) != str(current_staff.restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied: cannot create branches for another restaurant")
         
     # Check branch limit
     rest_result = await db.execute(select(Restaurant).where(Restaurant.id == data.restaurant_id))
@@ -328,8 +388,11 @@ async def create_branch(data: BranchCreate, db: AsyncSession = Depends(get_db), 
 
 @router.get("/branches")
 async def list_branches(restaurant_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
+    if current_staff.role != StaffRole.SYSTEM_ADMIN and str(restaurant_id) != str(current_staff.restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to another restaurant's branches")
+
     cache_key = f"branches:{restaurant_id}:{current_staff.role.value}:{current_staff.branch_id or 'all'}"
-    cached = cache.get(cache_key)
+    cached = await cache.aget(cache_key)
     if cached is not None:
         return cached
 
@@ -339,7 +402,7 @@ async def list_branches(restaurant_id: uuid.UUID, db: AsyncSession = Depends(get
     else:
         result = await db.execute(select(Branch).where(Branch.restaurant_id == restaurant_id))
     branches = result.scalars().all()
-    cache.set(cache_key, branches, ttl_seconds=120)
+    cache.set(cache_key, branches, ttl_seconds=86400)
     return branches
 
 
@@ -389,10 +452,18 @@ async def delete_branch(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 # ─── Tables ──────────────────────────────────────────────────────────────────
 @router.post("/tables")
 async def create_table(data: TableCreate, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
+    branch_res = await db.execute(select(Branch).where(Branch.id == data.branch_id))
+    branch = branch_res.scalar_one_or_none()
+    if not branch:
+        raise HTTPException(404, "Branch not found")
+
     if current_staff.role == StaffRole.BRANCH_ADMIN:
         if str(data.branch_id) != str(current_staff.branch_id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Branch admins can only create tables for their assigned branch")
-    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN]:
+    elif current_staff.role == StaffRole.SUPER_ADMIN:
+        if str(branch.restaurant_id) != str(current_staff.restaurant_id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to another restaurant's branch")
+    elif current_staff.role != StaffRole.SYSTEM_ADMIN:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
     t = Table(**data.model_dump())
@@ -405,18 +476,26 @@ async def create_table(data: TableCreate, db: AsyncSession = Depends(get_db), cu
 
 @router.get("/tables")
 async def list_tables(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
-    if current_staff.role == StaffRole.BRANCH_ADMIN:
-        if str(branch_id) != str(current_staff.branch_id):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to this branch's tables")
+    if current_staff.role == StaffRole.BRANCH_ADMIN and str(branch_id) != str(current_staff.branch_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to this branch's tables")
 
-    cache_key = f"tables:{branch_id}"
-    cached = cache.get(cache_key)
+    cache_key = f"tables:{branch_id}:{current_staff.restaurant_id}"
+    cached = await cache.aget(cache_key)
     if cached is not None:
         return cached
 
+    branch_res = await db.execute(select(Branch).where(Branch.id == branch_id))
+    branch = branch_res.scalar_one_or_none()
+    if not branch:
+        raise HTTPException(404, "Branch not found")
+
+    if current_staff.role != StaffRole.SYSTEM_ADMIN:
+        if str(branch.restaurant_id) != str(current_staff.restaurant_id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to another restaurant's tables")
+
     result = await db.execute(select(Table).where(Table.branch_id == branch_id, Table.is_active == True))
     tables = result.scalars().all()
-    cache.set(cache_key, tables, ttl_seconds=120)
+    cache.set(cache_key, tables, ttl_seconds=86400)
     return tables
 
 
@@ -426,8 +505,12 @@ async def update_table(table_id: uuid.UUID, data: dict, db: AsyncSession = Depen
     t = result.scalar_one_or_none()
     if not t:
         raise HTTPException(404, "Table not found")
+    branch_res = await db.execute(select(Branch).where(Branch.id == t.branch_id))
+    branch = branch_res.scalar_one_or_none()
     if current_staff.role == StaffRole.BRANCH_ADMIN and str(t.branch_id) != str(current_staff.branch_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to this table")
+    elif current_staff.role == StaffRole.SUPER_ADMIN and (not branch or str(branch.restaurant_id) != str(current_staff.restaurant_id)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to another restaurant's table")
     elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN]:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
@@ -446,8 +529,12 @@ async def delete_table(table_id: uuid.UUID, db: AsyncSession = Depends(get_db), 
     t = result.scalar_one_or_none()
     if not t:
         raise HTTPException(404, "Table not found")
+    branch_res = await db.execute(select(Branch).where(Branch.id == t.branch_id))
+    branch = branch_res.scalar_one_or_none()
     if current_staff.role == StaffRole.BRANCH_ADMIN and str(t.branch_id) != str(current_staff.branch_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to this table")
+    elif current_staff.role == StaffRole.SUPER_ADMIN and (not branch or str(branch.restaurant_id) != str(current_staff.restaurant_id)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to another restaurant's table")
     elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN]:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
@@ -458,8 +545,30 @@ async def delete_table(table_id: uuid.UUID, db: AsyncSession = Depends(get_db), 
 
 
 @router.post("/tables/{table_id}/qr")
-async def generate_qr(table_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def generate_qr(
+    table_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
+):
     """Generate a new secure QR token for a table."""
+    if current_staff.role not in (StaffRole.SYSTEM_ADMIN, StaffRole.SUPER_ADMIN, StaffRole.BRANCH_ADMIN):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only admins can generate or rotate table QR tokens")
+
+    table_result = await db.execute(select(Table).where(Table.id == table_id))
+    table = table_result.scalar_one_or_none()
+    if not table:
+        raise HTTPException(404, "Table not found")
+
+    branch_result = await db.execute(select(Branch).where(Branch.id == table.branch_id))
+    branch = branch_result.scalar_one_or_none()
+    if not branch:
+        raise HTTPException(404, "Branch not found")
+
+    if current_staff.role == StaffRole.BRANCH_ADMIN and str(table.branch_id) != str(current_staff.branch_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to this table")
+    if current_staff.role == StaffRole.SUPER_ADMIN and str(branch.restaurant_id) != str(current_staff.restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to another restaurant's table")
+
     # Revoke previous tokens
     existing = await db.execute(
         select(TableQRToken).where(TableQRToken.table_id == table_id, TableQRToken.is_revoked == False)
@@ -473,11 +582,6 @@ async def generate_qr(table_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(qr)
 
-    # Build the pre-filled WhatsApp message payload
-    table_result = await db.execute(select(Table).where(Table.id == table_id))
-    table = table_result.scalar_one()
-    branch_result = await db.execute(select(Branch).where(Branch.id == table.branch_id))
-    branch = branch_result.scalar_one()
     rest_result = await db.execute(select(Restaurant).where(Restaurant.id == branch.restaurant_id))
     restaurant = rest_result.scalar_one()
 
@@ -500,19 +604,22 @@ async def generate_qr(table_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     }
 
 
-
 # ─── Staff ────────────────────────────────────────────────────────────────────
 @router.post("/staff", response_model=StaffOut)
 async def create_staff(data: StaffCreate, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
-    # Permission check
+    # Prevent privilege escalation to SYSTEM_ADMIN by non-System-Admin
+    if data.role == StaffRole.SYSTEM_ADMIN and current_staff.role != StaffRole.SYSTEM_ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only SaaS System Admin can create SYSTEM_ADMIN accounts")
+
     if current_staff.role == StaffRole.BRANCH_ADMIN:
-        # Branch admin can only create staff for their own branch
-        if str(data.branch_id) != str(current_staff.branch_id):
+        if str(data.restaurant_id) != str(current_staff.restaurant_id) or str(data.branch_id) != str(current_staff.branch_id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Branch admins can only manage staff for their assigned branch")
-        # Branch admin cannot create other Branch Admins or Super Admins
-        if data.role in [StaffRole.SUPER_ADMIN, StaffRole.BRANCH_ADMIN]:
+        if data.role in [StaffRole.SUPER_ADMIN, StaffRole.BRANCH_ADMIN, StaffRole.SYSTEM_ADMIN]:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Branch admins cannot create other admins")
-    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN]:
+    elif current_staff.role == StaffRole.SUPER_ADMIN:
+        if str(data.restaurant_id) != str(current_staff.restaurant_id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot create staff for another restaurant")
+    elif current_staff.role != StaffRole.SYSTEM_ADMIN:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
     from app.services.auth_service import hash_password
@@ -527,11 +634,23 @@ async def create_staff(data: StaffCreate, db: AsyncSession = Depends(get_db), cu
     db.add(s)
     await db.commit()
     await db.refresh(s)
+    cache.invalidate_prefix(f"staff:{data.restaurant_id}")
     return s
 
 
 @router.get("/staff", response_model=list[StaffOut])
 async def list_staff(restaurant_id: uuid.UUID, branch_id: uuid.UUID | None = None, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
+    if current_staff.role not in (StaffRole.SYSTEM_ADMIN, StaffRole.SUPER_ADMIN, StaffRole.BRANCH_ADMIN):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions to list staff")
+    if current_staff.role != StaffRole.SYSTEM_ADMIN and str(restaurant_id) != str(current_staff.restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to another restaurant's staff")
+
+    effective_branch = current_staff.branch_id if current_staff.role == StaffRole.BRANCH_ADMIN else branch_id
+    cache_key = f"staff:{restaurant_id}:{effective_branch or 'all'}"
+    cached = await cache.aget(cache_key)
+    if cached is not None:
+        return cached
+
     # Data isolation
     from app.models.tenancy import Branch
     query = select(StaffUser, Branch.name.label("branch_name")).outerjoin(Branch, StaffUser.branch_id == Branch.id).where(StaffUser.restaurant_id == restaurant_id)
@@ -547,9 +666,17 @@ async def list_staff(restaurant_id: uuid.UUID, branch_id: uuid.UUID | None = Non
     
     staff_list = []
     for staff, branch_name in rows:
-        setattr(staff, "branch_name", branch_name)
-        staff_list.append(staff)
+        staff_list.append({
+            "id": staff.id,
+            "name": staff.name,
+            "phone": staff.phone,
+            "role": staff.role,
+            "branch_id": staff.branch_id,
+            "branch_name": branch_name,
+            "is_active": staff.is_active,
+        })
         
+    cache.set(cache_key, staff_list, ttl_seconds=86400)
     return staff_list
 
 
@@ -560,18 +687,32 @@ async def update_staff(staff_id: uuid.UUID, data: dict, db: AsyncSession = Depen
     if not s:
         raise HTTPException(404, "Staff not found")
 
-    if current_staff.role == StaffRole.BRANCH_ADMIN and str(s.branch_id) != str(current_staff.branch_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to staff outside your branch")
-    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN]:
+    if current_staff.role == StaffRole.BRANCH_ADMIN:
+        if str(s.branch_id) != str(current_staff.branch_id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to staff outside your branch")
+        if s.role in (StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN) and str(s.id) != str(current_staff.id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Branch admins cannot modify other admin accounts")
+    elif current_staff.role == StaffRole.SUPER_ADMIN:
+        if str(s.restaurant_id) != str(current_staff.restaurant_id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to staff in another restaurant")
+    elif current_staff.role != StaffRole.SYSTEM_ADMIN:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
+
+    if "role" in data and data["role"]:
+        target_role = str(data["role"])
+        if target_role == StaffRole.SYSTEM_ADMIN.value and current_staff.role != StaffRole.SYSTEM_ADMIN:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot escalate role to SYSTEM_ADMIN")
+        if current_staff.role == StaffRole.BRANCH_ADMIN and target_role in (StaffRole.SUPER_ADMIN.value, StaffRole.BRANCH_ADMIN.value, StaffRole.SYSTEM_ADMIN.value):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Branch admins cannot assign admin roles")
+        s.role = data["role"]
 
     if "name" in data and data["name"]:
         s.name = data["name"].strip()
     if "phone" in data and data["phone"]:
         s.phone = data["phone"].strip()
-    if "role" in data and data["role"]:
-        s.role = data["role"]
     if "branch_id" in data:
+        if current_staff.role == StaffRole.BRANCH_ADMIN and str(data["branch_id"]) != str(current_staff.branch_id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Branch admins cannot move staff to another branch")
         s.branch_id = uuid.UUID(data["branch_id"]) if data["branch_id"] else None
     if "is_active" in data:
         s.is_active = bool(data["is_active"])
@@ -581,6 +722,8 @@ async def update_staff(staff_id: uuid.UUID, data: dict, db: AsyncSession = Depen
 
     await db.commit()
     await db.refresh(s)
+    cache.invalidate_prefix(f"staff:{s.restaurant_id}")
+    cache.delete(f"auth_staff_obj:{s.id}")
     return {"ok": True, "id": str(s.id), "name": s.name}
 
 
@@ -593,21 +736,39 @@ async def delete_staff(staff_id: uuid.UUID, db: AsyncSession = Depends(get_db), 
 
     if current_staff.role == StaffRole.BRANCH_ADMIN and str(s.branch_id) != str(current_staff.branch_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to staff outside your branch")
+    elif current_staff.role == StaffRole.SUPER_ADMIN and str(s.restaurant_id) != str(current_staff.restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to staff in another restaurant")
     elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN]:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
     # Soft delete
     s.is_active = False
     await db.commit()
+    cache.invalidate_prefix(f"staff:{s.restaurant_id}")
+    cache.delete(f"auth_staff_obj:{s.id}")
     return {"ok": True}
 
 
 @router.patch("/staff/{staff_id}/deactivate")
-async def deactivate_staff(staff_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def deactivate_staff(
+    staff_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
+):
     result = await db.execute(select(StaffUser).where(StaffUser.id == staff_id))
     s = result.scalar_one_or_none()
     if not s:
         raise HTTPException(404, "Staff not found")
+
+    if current_staff.role == StaffRole.BRANCH_ADMIN and str(s.branch_id) != str(current_staff.branch_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to staff outside your branch")
+    elif current_staff.role == StaffRole.SUPER_ADMIN and str(s.restaurant_id) != str(current_staff.restaurant_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied to staff in another restaurant")
+    elif current_staff.role not in [StaffRole.SUPER_ADMIN, StaffRole.SYSTEM_ADMIN, StaffRole.BRANCH_ADMIN]:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
+
     s.is_active = False
     await db.commit()
+    cache.invalidate_prefix(f"staff:{s.restaurant_id}")
+    cache.delete(f"auth_staff_obj:{s.id}")
     return {"ok": True}

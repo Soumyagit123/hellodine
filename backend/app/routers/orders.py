@@ -93,7 +93,7 @@ async def list_orders(
     effective_served_filter = (served_filter or ("today" if user_role == "CASHIER" else "all")).strip()
 
     cache_key = f"orders_board:{branch_id}:{user_role}:{effective_served_filter}:{today_ist.isoformat()}:{status.value if status else 'all'}"
-    cached = cache.get(cache_key)
+    cached = await cache.aget(cache_key)
     if cached is not None:
         return cached
 
@@ -108,8 +108,22 @@ async def list_orders(
             OrderStatus.PREPARING,
             OrderStatus.READY,
         ]))
+    elif user_role in ["SUPER_ADMIN", "BRANCH_ADMIN", "SYSTEM_ADMIN"]:
+        # Admins use the comprehensive Orders Table with status/date filters (including CANCELLED)
+        if effective_served_filter.lower() != "all":
+            if effective_served_filter.lower() == "today":
+                target_date = today_ist
+            else:
+                try:
+                    target_date = datetime.strptime(effective_served_filter, "%Y-%m-%d").date()
+                except Exception:
+                    target_date = today_ist
+
+            start_of_day = datetime.combine(target_date, datetime.min.time(), tzinfo=tz_ist).astimezone(timezone.utc)
+            end_of_day = datetime.combine(target_date, datetime.max.time(), tzinfo=tz_ist).astimezone(timezone.utc)
+            q = q.where(Order.created_at >= start_of_day, Order.created_at <= end_of_day)
     else:
-        # Cashier, Branch Admin, Super Admin, System Admin:
+        # Cashier:
         # Show all active orders (NEW, ACCEPTED, PREPARING, READY) PLUS filtered SERVED orders
         if effective_served_filter.lower() == "all":
             q = q.where(Order.status.in_([
@@ -198,7 +212,7 @@ async def list_orders(
             "items": items_out,
         })
 
-    cache.set(cache_key, orders_out, ttl_seconds=10)
+    cache.set(cache_key, orders_out, ttl_seconds=600)
     return orders_out
 
 
@@ -365,6 +379,16 @@ async def reject_order_item(
     order = result.scalar_one_or_none()
     if not order:
         raise HTTPException(404, "Order not found")
+
+    if user_role in ("KITCHEN", "CASHIER", "BRANCH_ADMIN"):
+        if str(current_staff.branch_id) != str(order.branch_id):
+            raise HTTPException(403, "Access denied: order belongs to a different branch")
+    elif user_role == "SUPER_ADMIN":
+        from app.models.tenancy import Branch
+        br_res = await db.execute(select(Branch).where(Branch.id == order.branch_id))
+        br = br_res.scalar_one_or_none()
+        if not br or str(br.restaurant_id) != str(current_staff.restaurant_id):
+            raise HTTPException(403, "Access denied: order belongs to a different restaurant")
 
     target_item = next((it for it in order.items if it.id == item_id), None)
     if not target_item:

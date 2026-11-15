@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import api from "../../api/client";
+import api, { getClientCached, isClientCacheFresh } from "../../api/client";
+import { useBranch } from "../../context/BranchContext";
 import {
     Chart as ChartJS,
     CategoryScale,
@@ -66,38 +67,40 @@ type DashboardData = {
 };
 
 export default function DailyReport() {
-    const [data, setData] = useState<DashboardData | null>(null);
-    const [branchId, setBranchId] = useState<string>("");
-    const [loading, setLoading] = useState(true);
+    const { selectedBranchId } = useBranch();
+    const initialStaff = (() => {
+        try {
+            return JSON.parse(localStorage.getItem("hd_staff") || "{}");
+        } catch {
+            return {};
+        }
+    })();
+    const initialBranchId = initialStaff.branch_id || selectedBranchId || localStorage.getItem("hd_selected_branch") || "";
+    const initialDash = initialBranchId ? getClientCached<DashboardData>(`/billing/report/dashboard?branch_id=${initialBranchId}`) || null : null;
+
+    const [data, setData] = useState<DashboardData | null>(initialDash);
+    const [branchId, setBranchId] = useState<string>(initialBranchId);
+    const [loading, setLoading] = useState(!initialDash);
 
     useEffect(() => {
-        const s = JSON.parse(localStorage.getItem("hd_staff") || "{}");
-        const selectedBranchId = localStorage.getItem("hd_selected_branch");
-
-        if (s.branch_id) {
-            setBranchId(s.branch_id);
-        } else if (selectedBranchId) {
+        if (selectedBranchId && !initialStaff.branch_id) {
             setBranchId(selectedBranchId);
-        } else {
-            const token = localStorage.getItem("hd_token");
-            if (token) {
-                try {
-                    const payload = JSON.parse(atob(token.split(".")[1]));
-                    if (payload.restaurant_id) {
-                        api.get(`/admin/branches?restaurant_id=${payload.restaurant_id}`).then((r) => {
-                            if (r.data.length > 0) setBranchId(r.data[0].id);
-                        });
-                    }
-                } catch { }
-            }
         }
-    }, []);
+    }, [selectedBranchId]);
 
-    async function fetchDashboard() {
+    async function fetchDashboard(forceNetwork = false) {
         if (!branchId) return;
-        setLoading(true);
+        const url = `/billing/report/dashboard?branch_id=${branchId}`;
+        const cached = getClientCached<DashboardData>(url);
+        if (cached) {
+            setData(cached);
+            setLoading(false);
+            if (!forceNetwork && isClientCacheFresh(url, 120_000)) return;
+        } else {
+            setLoading(true);
+        }
         try {
-            const r = await api.get(`/billing/report/dashboard?branch_id=${branchId}`);
+            const r = await api.get(url);
             setData(r.data);
         } finally {
             setLoading(false);
@@ -196,7 +199,7 @@ export default function DailyReport() {
                     <h1 className="page-title" style={{ fontSize: "1.6rem", letterSpacing: "-0.5px" }}>Restaurant Analytics</h1>
                     <p className="page-sub" style={{ fontSize: "0.88rem" }}>Sales performance, customer ordering trends & revenue insights</p>
                 </div>
-                <button className="btn btn-outline btn-sm" onClick={fetchDashboard}>🔄 Refresh Data</button>
+                <button className="btn btn-outline btn-sm" onClick={() => fetchDashboard(true)}>🔄 Refresh Data</button>
             </div>
 
             {/* KPI ROW 1: PRIMARY TILES (Revenue + Daily Orders & Total Orders) */}

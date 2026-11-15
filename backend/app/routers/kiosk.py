@@ -304,24 +304,40 @@ async def list_available_tables_for_binding(
 
     rest_res = await db.execute(rest_query)
     restaurants = rest_res.scalars().all()
+    if not restaurants:
+        return []
+
+    rest_ids = [r.id for r in restaurants]
+    if is_system_admin or not current_staff.branch_id or current_staff.role.value == "SUPER_ADMIN":
+        br_query = select(Branch).where(Branch.restaurant_id.in_(rest_ids))
+    else:
+        br_query = select(Branch).where(Branch.id == current_staff.branch_id, Branch.restaurant_id.in_(rest_ids))
+
+    br_res = await db.execute(br_query)
+    branches = br_res.scalars().all()
+    if not branches:
+        return []
+
+    branch_ids = [b.id for b in branches]
+    t_res = await db.execute(
+        select(Table)
+        .where(Table.branch_id.in_(branch_ids), Table.is_active == True)
+        .order_by(Table.table_number)
+    )
+    all_tables = t_res.scalars().all()
+
+    branches_by_rest: dict[uuid.UUID, list[Branch]] = {}
+    for b in branches:
+        branches_by_rest.setdefault(b.restaurant_id, []).append(b)
+
+    tables_by_branch: dict[uuid.UUID, list[Table]] = {}
+    for t in all_tables:
+        tables_by_branch.setdefault(t.branch_id, []).append(t)
+
     out = []
-
     for r in restaurants:
-        # Filter branches
-        if is_system_admin or not current_staff.branch_id or current_staff.role.value == "SUPER_ADMIN":
-            br_query = select(Branch).where(Branch.restaurant_id == r.id)
-        else:
-            br_query = select(Branch).where(Branch.id == current_staff.branch_id, Branch.restaurant_id == r.id)
-
-        br_res = await db.execute(br_query)
-        branches = br_res.scalars().all()
-        for b in branches:
-            t_res = await db.execute(
-                select(Table)
-                .where(Table.branch_id == b.id, Table.is_active == True)
-                .order_by(Table.table_number)
-            )
-            tables = t_res.scalars().all()
+        for b in branches_by_rest.get(r.id, []):
+            tables = tables_by_branch.get(b.id, [])
             out.append({
                 "restaurant_id": str(r.id),
                 "restaurant_name": r.name,

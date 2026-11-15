@@ -1,9 +1,10 @@
 """Auth router — /api/auth"""
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+import time
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from pydantic import BaseModel
+from sqlalchemy import select, or_, func
+from pydantic import BaseModel, Field
 import uuid
 
 from app.database import get_db
@@ -12,6 +13,33 @@ from app.models.auth import StaffUser, StaffRole
 from app.services.auth_service import verify_password, create_access_token, get_current_staff
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# Per-IP Brute-Force Rate Limiter (Max 10 failed attempts per 60s window)
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_MAX_FAILED_ATTEMPTS = 10
+_LOCKOUT_WINDOW_SECONDS = 60.0
+
+
+def _check_rate_limit(client_ip: str) -> None:
+    now = time.monotonic()
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(client_ip, []) if now - t < _LOCKOUT_WINDOW_SECONDS]
+    _LOGIN_ATTEMPTS[client_ip] = attempts
+    if len(attempts) >= _MAX_FAILED_ATTEMPTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Please wait 1 minute before retrying.",
+        )
+
+
+def _record_failed_attempt(client_ip: str) -> None:
+    now = time.monotonic()
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(client_ip, []) if now - t < _LOCKOUT_WINDOW_SECONDS]
+    attempts.append(now)
+    _LOGIN_ATTEMPTS[client_ip] = attempts
+
+
+def _clear_failed_attempts(client_ip: str) -> None:
+    _LOGIN_ATTEMPTS.pop(client_ip, None)
 
 
 class TokenResponse(BaseModel):
@@ -35,137 +63,83 @@ class StaffOut(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str
+    new_password: str = Field(..., min_length=6, max_length=128)
 
     model_config = {"from_attributes": True}
 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
+    request: Request,
     response: Response,
     form: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
     from app.models.tenancy import Restaurant
-    from app.services.auth_service import hash_password
+
+    client_ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(client_ip)
 
     raw_username = (form.username or "").strip()
+    if not raw_username or not form.password:
+        _record_failed_attempt(client_ip)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid phone or password")
+
     digits_only = "".join(ch for ch in raw_username if ch.isdigit())
+    lower_input = raw_username.lower()
 
-    # 1. Auto-ensure SYSTEM_ADMIN exists in DB if logging in with the SaaS Owner phone
-    is_sysadmin_attempt = (
-        raw_username in ("+91 9000000000", "+919000000000", "9000000000", "sysadmin")
-        or digits_only.endswith("9000000000")
+    # Targeted SQL query instead of loading all staff users into memory (PERF-01)
+    conditions = [
+        func.lower(StaffUser.phone) == lower_input,
+        func.lower(StaffUser.name) == lower_input,
+    ]
+    if len(digits_only) >= 10:
+        last_10 = digits_only[-10:]
+        conditions.append(StaffUser.phone.ilike(f"%{last_10}"))
+    if lower_input in ("sysadmin", "systemadmin", "admin@hellodine"):
+        conditions.append(StaffUser.role == StaffRole.SYSTEM_ADMIN)
+
+    result = await db.execute(
+        select(StaffUser).where(
+            StaffUser.is_active == True,
+            or_(*conditions),
+        )
     )
-    if is_sysadmin_attempt:
-        try:
-            from sqlalchemy import text
-            await db.execute(text("ALTER TYPE staffrole ADD VALUE IF NOT EXISTS 'SYSTEM_ADMIN'"))
-            await db.commit()
-        except Exception:
-            await db.rollback()
-
-        sys_res = await db.execute(select(StaffUser).where(StaffUser.role == StaffRole.SYSTEM_ADMIN))
-        sys_user = sys_res.scalars().first()
-        if not sys_user:
-            rest_res = await db.execute(select(Restaurant).order_by(Restaurant.created_at.asc()))
-            first_rest = rest_res.scalars().first()
-            if not first_rest:
-                first_rest = Restaurant(
-                    name="HelloDine HQ",
-                    whatsapp_phone_number_id="kiosk_hq",
-                    whatsapp_display_number="+91 9000000000",
-                    subscription_plan="PRO_AI",
-                    subscription_status="ACTIVE",
-                )
-                db.add(first_rest)
-                await db.flush()
-            sys_user = StaffUser(
-                restaurant_id=first_rest.id,
-                branch_id=None,
-                role=StaffRole.SYSTEM_ADMIN,
-                name="SaaS System Owner",
-                phone="+91 9000000000",
-                password_hash=hash_password("sysadmin123"),
-                is_active=True,
-            )
-            db.add(sys_user)
-            await db.commit()
-            await db.refresh(sys_user)
-        elif form.password == "sysadmin123" and not verify_password("sysadmin123", sys_user.password_hash):
-            # Ensure default sysadmin123 password always works if password hash was out of sync
-            sys_user.password_hash = hash_password("sysadmin123")
-            sys_user.is_active = True
-            await db.commit()
-            await db.refresh(sys_user)
-
-        if verify_password(form.password, sys_user.password_hash):
-            res_result = await db.execute(select(Restaurant).where(Restaurant.id == sys_user.restaurant_id))
-            restaurant = res_result.scalar_one_or_none()
-            rest_name = restaurant.name if restaurant else "HelloDine SaaS"
-            role_str = str(sys_user.role.value if hasattr(sys_user.role, "value") else sys_user.role)
-            token = create_access_token({"sub": str(sys_user.id), "role": role_str, "restaurant_id": str(sys_user.restaurant_id)})
-            response.set_cookie(
-                key="hd_access_token",
-                value=token,
-                httponly=True,
-                secure=True,
-                samesite="lax",
-                max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-                path="/api",
-            )
-            return TokenResponse(
-                access_token=token,
-                token_type="bearer",
-                role=role_str,
-                name=sys_user.name,
-                restaurant_id=str(sys_user.restaurant_id),
-                restaurant_name=rest_name,
-                branch_id=None,
-            )
-
-    # 2. Flexible Login ID lookup:
-    #    - Matches exact Login ID / Username / Email (case-insensitive)
-    #    - Matches Full Name (case-insensitive, e.g. "Cashier Ravi")
-    #    - Matches 10-digit Mobile Number (with or without +91 or spaces)
-    result = await db.execute(select(StaffUser).where(StaffUser.is_active == True))
-    all_active_staff = result.scalars().all()
+    candidates = result.scalars().all()
 
     staff = None
-    lower_input = raw_username.lower()
-    for s in all_active_staff:
+    for s in candidates:
         s_login = (s.phone or "").strip()
         s_name = (s.name or "").strip()
         s_digits = "".join(ch for ch in s_login if ch.isdigit())
 
-        # Case-insensitive exact match on Login ID / Phone / Username
-        if s_login.lower() == lower_input:
-            staff = s
-            break
-        # Case-insensitive match on Staff Name
-        if s_name.lower() == lower_input:
-            staff = s
-            break
-        # 10-digit mobile match (ignores +91, spaces, dashes)
-        if len(digits_only) >= 10 and len(s_digits) >= 10 and digits_only[-10:] == s_digits[-10:]:
-            staff = s
-            break
-        if lower_input in ("sysadmin", "systemadmin", "admin@hellodine") and s.role == StaffRole.SYSTEM_ADMIN:
-            staff = s
-            break
+        if (
+            s_login.lower() == lower_input
+            or s_name.lower() == lower_input
+            or (len(digits_only) >= 10 and len(s_digits) >= 10 and digits_only[-10:] == s_digits[-10:])
+            or (lower_input in ("sysadmin", "systemadmin", "admin@hellodine") and s.role == StaffRole.SYSTEM_ADMIN)
+        ):
+            if verify_password(form.password, s.password_hash):
+                staff = s
+                break
 
-    if not staff or not verify_password(form.password, staff.password_hash):
+    if not staff:
+        _record_failed_attempt(client_ip)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid phone or password")
 
-    res_result = await db.execute(select(Restaurant).where(Restaurant.id == staff.restaurant_id))
-    restaurant = res_result.scalar_one()
+    _clear_failed_attempts(client_ip)
 
-    token = create_access_token({"sub": str(staff.id), "role": staff.role, "restaurant_id": str(staff.restaurant_id)})
+    res_result = await db.execute(select(Restaurant).where(Restaurant.id == staff.restaurant_id))
+    restaurant = res_result.scalar_one_or_none()
+    rest_name = restaurant.name if restaurant else "HelloDine"
+    role_str = str(staff.role.value if hasattr(staff.role, "value") else staff.role)
+
+    token = create_access_token({"sub": str(staff.id), "role": role_str, "restaurant_id": str(staff.restaurant_id)})
     response.set_cookie(
         key="hd_access_token",
         value=token,
         httponly=True,
-        secure=True,
+        secure=settings.ENVIRONMENT.lower() in ("production", "prod"),
         samesite="lax",
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/api",
@@ -173,10 +147,10 @@ async def login(
     return TokenResponse(
         access_token=token,
         token_type="bearer",
-        role=staff.role,
+        role=role_str,
         name=staff.name,
         restaurant_id=str(staff.restaurant_id),
-        restaurant_name=restaurant.name,
+        restaurant_name=rest_name,
         branch_id=str(staff.branch_id) if staff.branch_id else None,
     )
 

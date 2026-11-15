@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { QRCodeCanvas } from "qrcode.react";
-import client from "../../api/client";
+import client, { getClientCached, isClientCacheFresh } from "../../api/client";
 
 interface Branch {
     id: string;
@@ -42,9 +42,27 @@ export default function BranchAdmin() {
 
     const staffData = JSON.parse(localStorage.getItem("hd_staff") || "{}");
     const restaurantId = staffData.restaurant_id;
+    const brUrl = restaurantId ? `/admin/branches?restaurant_id=${restaurantId}` : "";
+    const restUrl = restaurantId ? `/admin/restaurants/${restaurantId}` : "";
 
     useEffect(() => {
         if (restaurantId) {
+            const cachedBr = getClientCached<Branch[]>(brUrl);
+            const cachedRest = getClientCached<any>(restUrl);
+            const cachedPlans = getClientCached<any>("/admin/saas/plans");
+            if (cachedBr) setBranches(cachedBr);
+            if (cachedRest) {
+                setRestaurant(cachedRest);
+                setMaxBranches(cachedRest.max_branches || 1);
+                setMerchantUpiInput(cachedRest.merchant_upi_id || "");
+            }
+            if (cachedPlans) setSaasConfig(cachedPlans);
+            if (cachedBr && cachedRest && cachedPlans) {
+                setLoading(false);
+                if (isClientCacheFresh(brUrl, 86_400_000) && isClientCacheFresh(restUrl, 86_400_000)) {
+                    return;
+                }
+            }
             Promise.all([
                 fetchBranches(),
                 fetchRestaurantInfo()

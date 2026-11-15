@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import get_db
 from app.models.auth import StaffUser
+from app.services.cache_service import cache
 
 import bcrypt
 
@@ -43,6 +44,20 @@ def extract_token_from_request(request: Request, header_token: str | None) -> st
     return None
 
 
+async def _resolve_active_staff(staff_id: str, db: AsyncSession) -> StaffUser | None:
+    """Resolve active StaffUser with 300s L1 RAM cache to avoid hitting remote Postgres on every API request."""
+    cache_key = f"auth_staff_obj:{staff_id}"
+    cached_staff = cache.get(cache_key)
+    if isinstance(cached_staff, StaffUser) and cached_staff.is_active:
+        return cached_staff
+    res = await db.execute(select(StaffUser).where(StaffUser.id == staff_id, StaffUser.is_active == True))
+    staff = res.scalar_one_or_none()
+    if staff is not None:
+        # Store in L1 RAM so auth verification takes 0.01ms with 0 SQL queries
+        cache._store[cache_key] = (staff, datetime.now(timezone.utc).timestamp() + 300.0)
+    return staff
+
+
 async def get_optional_staff(
     request: Request,
     token: str | None = Depends(oauth2_scheme_optional),
@@ -57,8 +72,7 @@ async def get_optional_staff(
         staff_id: str = payload.get("sub")
         if not staff_id:
             return None
-        res = await db.execute(select(StaffUser).where(StaffUser.id == staff_id, StaffUser.is_active == True))
-        return res.scalar_one_or_none()
+        return await _resolve_active_staff(staff_id, db)
     except Exception:
         return None
 
@@ -85,8 +99,7 @@ async def get_current_staff(
     except JWTError:
         raise credentials_exc
 
-    result = await db.execute(select(StaffUser).where(StaffUser.id == staff_id, StaffUser.is_active == True))
-    staff = result.scalar_one_or_none()
+    staff = await _resolve_active_staff(staff_id, db)
     if staff is None:
         raise credentials_exc
     return staff

@@ -23,41 +23,48 @@ class KitchenConnectionManager:
         self._redis_client = None
         self._pubsub_task: Optional[asyncio.Task] = None
         self._redis_last_fail_ts: float = 0.0
+        self._init_lock = asyncio.Lock()
 
     async def _init_redis(self):
         """Optionally connect to Redis Pub/Sub if REDIS_URL is configured."""
         if self._redis_client is not None or not settings.REDIS_URL:
             return
-        # Avoid blocking every WebSocket connect on DNS lookup if Redis is unavailable locally (retry at most once per 5 min)
-        now_ts = time.monotonic()
-        if self._redis_last_fail_ts > 0 and (now_ts - self._redis_last_fail_ts) < 300.0:
-            return
-        try:
-            import redis.asyncio as aioredis
-            client = aioredis.from_url(
-                settings.REDIS_URL,
-                decode_responses=True,
-                socket_connect_timeout=1.0,
-                socket_timeout=1.0,
-            )
-            await client.ping()
-            self._redis_client = client
-            self._redis_last_fail_ts = 0.0
-            self._pubsub_task = asyncio.create_task(self._listen_redis())
-            logger.info("KitchenConnectionManager connected to Redis Pub/Sub.")
-        except Exception as e:
-            if self._redis_last_fail_ts == 0.0:
-                logger.warning(f"Redis not available for Pub/Sub ({e}). Falling back to local in-memory broadcasting.")
-            self._redis_last_fail_ts = now_ts
-            self._redis_client = None
+        async with self._init_lock:
+            if self._redis_client is not None:
+                return
+            # Avoid blocking every WebSocket connect on DNS lookup if Redis is unavailable locally (retry at most once per 5 min)
+            now_ts = time.monotonic()
+            if self._redis_last_fail_ts > 0 and (now_ts - self._redis_last_fail_ts) < 300.0:
+                return
+            try:
+                import redis.asyncio as aioredis
+                client = aioredis.from_url(
+                    settings.REDIS_URL,
+                    decode_responses=True,
+                    socket_connect_timeout=3.0,
+                    health_check_interval=30,
+                )
+                await client.ping()
+                self._redis_client = client
+                self._redis_last_fail_ts = 0.0
+                if self._pubsub_task is None or self._pubsub_task.done():
+                    self._pubsub_task = asyncio.create_task(self._listen_redis())
+                logger.info("KitchenConnectionManager connected to Redis Pub/Sub.")
+            except Exception as e:
+                if self._redis_last_fail_ts == 0.0:
+                    logger.warning(f"Redis not available for Pub/Sub ({e}). Falling back to local in-memory broadcasting.")
+                self._redis_last_fail_ts = now_ts
+                self._redis_client = None
 
     async def _listen_redis(self):
         """Background listener subscribing to branch and table broadcast channels."""
+        pubsub = None
         try:
             pubsub = self._redis_client.pubsub()
             await pubsub.psubscribe("branch:*", "table:*")
-            async for raw in pubsub.listen():
-                if raw["type"] == "pmessage":
+            while self._redis_client is not None:
+                raw = await pubsub.get_message(ignore_subscribe_messages=True, timeout=5.0)
+                if raw and raw.get("type") == "pmessage":
                     channel = raw["channel"]
                     data = json.loads(raw["data"])
                     if channel.startswith("branch:"):
@@ -69,7 +76,14 @@ class KitchenConnectionManager:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"Error in Redis Pub/Sub listener: {e}")
+            logger.warning(f"Redis Pub/Sub listener disconnected ({e}). Switching to local fallback and retrying later.")
+            self._redis_client = None
+        finally:
+            if pubsub is not None:
+                try:
+                    await pubsub.close()
+                except Exception:
+                    pass
 
     async def connect(self, websocket: WebSocket, branch_id: str):
         await websocket.accept()

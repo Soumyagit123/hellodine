@@ -15,13 +15,31 @@ from app.models.orders import Order, OrderItem, OrderStatus
 from app.models.menu import MenuItem
 from app.models.customers import Customer, TableSession, SessionStatus
 from app.models.auth import StaffUser, StaffRole
-from app.models.tenancy import Table
+from app.models.tenancy import Table, Branch
 from app.services.auth_service import get_current_staff
 from app.services.ws_manager import manager
 from app.services.cache_service import cache
 
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
+
+
+async def _verify_branch_billing_access(branch_id: uuid.UUID, current_staff: StaffUser, db: AsyncSession) -> None:
+    """Enforce multi-tenant branch/restaurant ownership for billing and financial report endpoints."""
+    role = current_staff.role.value if hasattr(current_staff.role, "value") else str(current_staff.role)
+    if role == "SYSTEM_ADMIN":
+        return
+    if role not in ("SUPER_ADMIN", "BRANCH_ADMIN", "CASHIER"):
+        raise HTTPException(403, "Not authorized to access billing data")
+    if role in ("BRANCH_ADMIN", "CASHIER"):
+        if str(current_staff.branch_id) != str(branch_id):
+            raise HTTPException(403, "Access denied: branch belongs to a different restaurant/location")
+        return
+    # SUPER_ADMIN: verify branch belongs to their restaurant
+    br_res = await db.execute(select(Branch).where(Branch.id == branch_id))
+    br = br_res.scalar_one_or_none()
+    if not br or str(br.restaurant_id) != str(current_staff.restaurant_id):
+        raise HTTPException(403, "Access denied: branch belongs to a different restaurant")
 
 
 from app.services.billing_service import sync_session_bill
@@ -48,7 +66,7 @@ async def generate_bill(session_id: uuid.UUID, db: AsyncSession = Depends(get_db
 async def pay_bill(
     bill_id: uuid.UUID,
     data: PayRequest,
-    current_staff: Optional[StaffUser] = Depends(get_current_staff),
+    current_staff: StaffUser = Depends(get_current_staff),
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(select(Bill).where(Bill.id == bill_id))
@@ -57,16 +75,16 @@ async def pay_bill(
         raise HTTPException(404, "Bill not found")
 
     # Multi-tenant authorization check
-    if current_staff:
-        if current_staff.role != StaffRole.SYSTEM_ADMIN and bill.branch_id != current_staff.branch_id:
-            raise HTTPException(403, "Access denied: bill belongs to a different branch/restaurant")
+    await _verify_branch_billing_access(bill.branch_id, current_staff, db)
 
     if bill.status == BillStatus.PAID:
         raise HTTPException(400, "Bill already paid")
 
-    # Payment amount validation against bill total
+    # Payment amount validation against bill total (allow up to 0.50 rounding tolerance)
     if float(data.amount) <= 0:
         raise HTTPException(400, "Payment amount must be greater than zero")
+    if float(data.amount) + 0.50 < float(bill.total):
+        raise HTTPException(400, f"Payment amount (₹{float(data.amount):.2f}) cannot be less than the bill total (₹{float(bill.total):.2f})")
 
     now = datetime.now(timezone.utc)
     payment = Payment(
@@ -183,10 +201,7 @@ async def get_open_bill(table_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 @router.get("/report/daily")
 async def daily_report(branch_id: uuid.UUID, date: str, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
     """Basic daily sales report for admin."""
-    # Data isolation
-    if current_staff.role == StaffRole.BRANCH_ADMIN:
-        if str(branch_id) != str(current_staff.branch_id):
-            raise HTTPException(403, "Access denied to this branch's reports")
+    await _verify_branch_billing_access(branch_id, current_staff, db)
 
     cache_key = f"daily_report:{branch_id}:{date}"
     cached = cache.get(cache_key)
@@ -225,119 +240,191 @@ async def daily_report(branch_id: uuid.UUID, date: str, db: AsyncSession = Depen
 
 
 @router.get("/report/dashboard")
-async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Comprehensive Corporate Analytics Dashboard API."""
-    from datetime import date as dt_date, datetime, timezone, timedelta
+async def corporate_dashboard(
+    branch_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
+):
+    """Comprehensive Corporate Analytics Dashboard API (Optimized batch queries)."""
+    import calendar
+    from datetime import datetime, timezone, timedelta
 
     tz_ist = timezone(timedelta(hours=5, minutes=30))
     today = datetime.now(tz_ist).date()
 
-    cache_key = f"corp_dashboard:{branch_id}:{today.isoformat()}"
-    cached = cache.get(cache_key)
+    cache_key = f"corp_dashboard:{branch_id}:{current_staff.restaurant_id}:{today.isoformat()}"
+    cached = await cache.aget(cache_key)
     if cached is not None:
         return cached
+
+    await _verify_branch_billing_access(branch_id, current_staff, db)
 
     # 1. Define Time Ranges (IST -> UTC Aware)
     start_of_today = datetime.combine(today, datetime.min.time(), tzinfo=tz_ist).astimezone(timezone.utc)
     end_of_today = datetime.combine(today, datetime.max.time(), tzinfo=tz_ist).astimezone(timezone.utc)
-
     start_of_month = datetime.combine(today.replace(day=1), datetime.min.time(), tzinfo=tz_ist).astimezone(timezone.utc)
 
-    # 2. Base Query helper (includes both Bill count and actual Order count)
-    async def get_metrics(start_time=None, end_time=None):
-        q = select(
+    # Calculate 6-month window start
+    curr_year, curr_month = today.year, today.month
+    six_m_month = curr_month - 5
+    six_m_year = curr_year
+    while six_m_month <= 0:
+        six_m_month += 12
+        six_m_year -= 1
+    six_month_start = datetime(six_m_year, six_m_month, 1, 0, 0, 0, tzinfo=tz_ist).astimezone(timezone.utc)
+
+    # 2. All-Time Aggregate Metrics (2 queries total instead of 6)
+    all_bills_res = await db.execute(
+        select(
             func.count(Bill.id).label("total_bills"),
             func.sum(Bill.total).label("total_revenue"),
             func.sum(Bill.cgst_amount).label("total_cgst"),
             func.sum(Bill.sgst_amount).label("total_sgst"),
         ).where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID)
+    )
+    all_b_row = all_bills_res.one()
 
-        if start_time:
-            q = q.where(Bill.created_at >= start_time)
-        if end_time:
-            q = q.where(Bill.created_at <= end_time)
-
-        res = await db.execute(q)
-        row = res.one()
-
-        oq = select(func.count(Order.id).label("total_orders")).where(
+    all_orders_res = await db.execute(
+        select(func.count(Order.id).label("total_orders")).where(
             Order.branch_id == branch_id,
             Order.status != OrderStatus.CANCELLED,
         )
-        if start_time:
-            oq = oq.where(Order.created_at >= start_time)
-        if end_time:
-            oq = oq.where(Order.created_at <= end_time)
-        ores = await db.execute(oq)
-        orow = ores.one()
+    )
+    all_o_row = all_orders_res.one()
 
-        return {
-            "total_bills": row.total_bills or 0,
-            "total_orders": orow.total_orders or 0,
-            "total_revenue": float(row.total_revenue or 0),
-            "total_cgst": float(row.total_cgst or 0),
-            "total_sgst": float(row.total_sgst or 0),
-        }
+    all_time_stats = {
+        "total_bills": all_b_row.total_bills or 0,
+        "total_orders": all_o_row.total_orders or 0,
+        "total_revenue": float(all_b_row.total_revenue or 0),
+        "total_cgst": float(all_b_row.total_cgst or 0),
+        "total_sgst": float(all_b_row.total_sgst or 0),
+    }
 
-    # 3. Fetch Aggregate Blocks
-    today_stats = await get_metrics(start_of_today, end_of_today)
-    mtd_stats = await get_metrics(start_of_month, end_of_today)
-    all_time_stats = await get_metrics(None, None)
+    # 3. Single Batch Fetch of 6-Month Window Bills & Orders (2 queries total instead of 30 loop queries!)
+    recent_bills_res = await db.execute(
+        select(Bill.created_at, Bill.total, Bill.cgst_amount, Bill.sgst_amount).where(
+            Bill.branch_id == branch_id,
+            Bill.status == BillStatus.PAID,
+            Bill.created_at >= six_month_start,
+            Bill.created_at <= end_of_today,
+        )
+    )
+    recent_bills = recent_bills_res.all()
 
-    # 4. Generate 7-Day Trend Array for Chart.js
+    recent_orders_res = await db.execute(
+        select(Order.created_at).where(
+            Order.branch_id == branch_id,
+            Order.status != OrderStatus.CANCELLED,
+            Order.created_at >= six_month_start,
+            Order.created_at <= end_of_today,
+        )
+    )
+    recent_orders = recent_orders_res.all()
+
+    # Compute Today, MTD, 7-Day Trend, and 6-Month Trend in O(N) memory pass
+    today_bills_cnt, today_rev, today_cgst, today_sgst = 0, 0.0, 0.0, 0.0
+    mtd_bills_cnt, mtd_rev, mtd_cgst, mtd_sgst = 0, 0.0, 0.0, 0.0
+
+    day_rev_map: dict[str, float] = {}
+    day_bill_cnt_map: dict[str, int] = {}
+    month_rev_map: dict[tuple[int, int], float] = {}
+    month_bill_cnt_map: dict[tuple[int, int], int] = {}
+
+    for b_created, b_total, b_cgst, b_sgst in recent_bills:
+        if not b_created:
+            continue
+        b_utc = b_created if b_created.tzinfo else b_created.replace(tzinfo=timezone.utc)
+        b_ist = b_utc.astimezone(tz_ist)
+        val_total = float(b_total or 0)
+        val_cgst = float(b_cgst or 0)
+        val_sgst = float(b_sgst or 0)
+
+        if start_of_today <= b_utc <= end_of_today:
+            today_bills_cnt += 1
+            today_rev += val_total
+            today_cgst += val_cgst
+            today_sgst += val_sgst
+
+        if start_of_month <= b_utc <= end_of_today:
+            mtd_bills_cnt += 1
+            mtd_rev += val_total
+            mtd_cgst += val_cgst
+            mtd_sgst += val_sgst
+
+        d_key = b_ist.date().isoformat()
+        day_rev_map[d_key] = day_rev_map.get(d_key, 0.0) + val_total
+        day_bill_cnt_map[d_key] = day_bill_cnt_map.get(d_key, 0) + 1
+
+        m_key = (b_ist.year, b_ist.month)
+        month_rev_map[m_key] = month_rev_map.get(m_key, 0.0) + val_total
+        month_bill_cnt_map[m_key] = month_bill_cnt_map.get(m_key, 0) + 1
+
+    today_orders_cnt = 0
+    mtd_orders_cnt = 0
+    day_order_cnt_map: dict[str, int] = {}
+    month_order_cnt_map: dict[tuple[int, int], int] = {}
+
+    for (o_created,) in recent_orders:
+        if not o_created:
+            continue
+        o_utc = o_created if o_created.tzinfo else o_created.replace(tzinfo=timezone.utc)
+        o_ist = o_utc.astimezone(tz_ist)
+
+        if start_of_today <= o_utc <= end_of_today:
+            today_orders_cnt += 1
+        if start_of_month <= o_utc <= end_of_today:
+            mtd_orders_cnt += 1
+
+        d_key = o_ist.date().isoformat()
+        day_order_cnt_map[d_key] = day_order_cnt_map.get(d_key, 0) + 1
+
+        m_key = (o_ist.year, o_ist.month)
+        month_order_cnt_map[m_key] = month_order_cnt_map.get(m_key, 0) + 1
+
+    today_stats = {
+        "total_bills": today_bills_cnt,
+        "total_orders": today_orders_cnt,
+        "total_revenue": round(today_rev, 2),
+        "total_cgst": round(today_cgst, 2),
+        "total_sgst": round(today_sgst, 2),
+    }
+    mtd_stats = {
+        "total_bills": mtd_bills_cnt,
+        "total_orders": mtd_orders_cnt,
+        "total_revenue": round(mtd_rev, 2),
+        "total_cgst": round(mtd_cgst, 2),
+        "total_sgst": round(mtd_sgst, 2),
+    }
+
+    # 4. Generate 7-Day Trend Array
     trend_data = []
     for i in range(6, -1, -1):
         d = today - timedelta(days=i)
-        st = datetime.combine(d, datetime.min.time(), tzinfo=tz_ist).astimezone(timezone.utc)
-        et = datetime.combine(d, datetime.max.time(), tzinfo=tz_ist).astimezone(timezone.utc)
-
-        # Single day fast query
-        r = await db.execute(
-            select(func.sum(Bill.total).label("rev"), func.count(Bill.id).label("cnt"))
-            .where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID, Bill.created_at >= st, Bill.created_at <= et)
-        )
-        day_row = r.one()
-        or_day = await db.execute(
-            select(func.count(Order.id).label("ocnt"))
-            .where(Order.branch_id == branch_id, Order.status != OrderStatus.CANCELLED, Order.created_at >= st, Order.created_at <= et)
-        )
-        oday_row = or_day.one()
+        d_key = d.isoformat()
+        ocnt = day_order_cnt_map.get(d_key, 0)
+        bcnt = day_bill_cnt_map.get(d_key, 0)
         trend_data.append({
             "date": d.strftime("%b %d"),
-            "revenue": float(day_row.rev or 0),
-            "orders": oday_row.ocnt or day_row.cnt or 0
+            "revenue": round(day_rev_map.get(d_key, 0.0), 2),
+            "orders": ocnt or bcnt or 0,
         })
 
-    # 5. Generate 6-Month Revenue Trend (Monthly Trend)
+    # 5. Generate 6-Month Revenue Trend
     monthly_trend = []
-    curr_year = today.year
-    curr_month = today.month
     for m_offset in range(5, -1, -1):
         target_month = curr_month - m_offset
         target_year = curr_year
         while target_month <= 0:
             target_month += 12
             target_year -= 1
-
-        import calendar
-        _, last_day = calendar.monthrange(target_year, target_month)
-        m_start = datetime(target_year, target_month, 1, 0, 0, 0, tzinfo=tz_ist).astimezone(timezone.utc)
-        m_end = datetime(target_year, target_month, last_day, 23, 59, 59, tzinfo=tz_ist).astimezone(timezone.utc)
-
-        m_res = await db.execute(
-            select(func.sum(Bill.total).label("rev"), func.count(Bill.id).label("cnt"))
-            .where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID, Bill.created_at >= m_start, Bill.created_at <= m_end)
-        )
-        m_row = m_res.one()
-        om_res = await db.execute(
-            select(func.count(Order.id).label("ocnt"))
-            .where(Order.branch_id == branch_id, Order.status != OrderStatus.CANCELLED, Order.created_at >= m_start, Order.created_at <= m_end)
-        )
-        om_row = om_res.one()
+        m_start = datetime(target_year, target_month, 1, 0, 0, 0, tzinfo=tz_ist)
+        m_key = (target_year, target_month)
+        ocnt = month_order_cnt_map.get(m_key, 0)
+        bcnt = month_bill_cnt_map.get(m_key, 0)
         monthly_trend.append({
             "month": m_start.strftime("%b %Y"),
-            "revenue": float(m_row.rev or 0),
-            "orders": om_row.ocnt or m_row.cnt or 0
+            "revenue": round(month_rev_map.get(m_key, 0.0), 2),
+            "orders": ocnt or bcnt or 0,
         })
 
     # 6a. Today's Top 5 Best Selling Food Items (Ranked by Quantity Sold Today, with Revenue)
@@ -425,17 +512,14 @@ async def corporate_dashboard(branch_id: uuid.UUID, db: AsyncSession = Depends(g
         "top_selling_items": top_selling_items,
         "payment_breakdown": payment_breakdown,
     }
-    cache.set(cache_key, dashboard_out, ttl_seconds=60)
+    cache.set(cache_key, dashboard_out, ttl_seconds=300)
     return dashboard_out
 
 
 @router.get("/history")
 async def billing_history(branch_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_staff: StaffUser = Depends(get_current_staff)):
     """List paid bills for a branch."""
-    # Data isolation
-    if current_staff.role == StaffRole.BRANCH_ADMIN:
-        if str(branch_id) != str(current_staff.branch_id):
-            raise HTTPException(403, "Access denied to this branch's history")
+    await _verify_branch_billing_access(branch_id, current_staff, db)
             
     result = await db.execute(
         select(Bill).where(Bill.branch_id == branch_id, Bill.status == BillStatus.PAID)
@@ -449,9 +533,11 @@ async def billing_history(branch_id: uuid.UUID, db: AsyncSession = Depends(get_d
 async def transactions_by_date(
     branch_id: uuid.UUID, 
     date: Optional[str] = None, 
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_staff: StaffUser = Depends(get_current_staff),
 ):
     """Return ALL bills (paid + unpaid) for a specific date for this branch."""
+    await _verify_branch_billing_access(branch_id, current_staff, db)
     cache_key = f"billing_tx:{branch_id}:{date or 'today'}"
     cached = cache.get(cache_key)
     if cached is not None:

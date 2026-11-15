@@ -1,13 +1,26 @@
 import { useEffect, useState } from "react";
-import api from "../../api/client";
+import api, { getClientCached, isClientCacheFresh } from "../../api/client";
+import { useBranch } from "../../context/BranchContext";
 
 const ROLES = ["KITCHEN", "CASHIER", "BRANCH_ADMIN", "SUPER_ADMIN"];
 
 export default function StaffAdmin() {
-    const [staff, setStaff] = useState<any[]>([]);
-    const [restaurantId, setRestaurantId] = useState<string>("");
-    const [branchId, setBranchId] = useState<string>("");
-    const [userRole, setUserRole] = useState<string>("");
+    const { selectedBranchId } = useBranch();
+    const initialStaffObj = (() => {
+        try {
+            return JSON.parse(localStorage.getItem("hd_staff") || "{}");
+        } catch {
+            return {};
+        }
+    })();
+    const initialRestId = initialStaffObj.restaurant_id || "";
+    const initialBrId = initialStaffObj.branch_id || selectedBranchId || localStorage.getItem("hd_selected_branch") || "";
+    const initialStaffUrl = initialRestId && initialBrId ? `/admin/staff?restaurant_id=${initialRestId}&branch_id=${initialBrId}` : "";
+
+    const [staff, setStaff] = useState<any[]>(() => (initialStaffUrl ? getClientCached<any[]>(initialStaffUrl) || [] : []));
+    const [restaurantId, setRestaurantId] = useState<string>(initialRestId);
+    const [branchId, setBranchId] = useState<string>(initialBrId);
+    const [userRole, setUserRole] = useState<string>(initialStaffObj.role || "");
     const [showNew, setShowNew] = useState(false);
     const [editingStaff, setEditingStaff] = useState<any | null>(null);
 
@@ -47,18 +60,42 @@ export default function StaffAdmin() {
 
         if (rId || s.restaurant_id) {
             const rid = rId || s.restaurant_id;
-            api.get(`/admin/branches?restaurant_id=${rid}`).then((r) => {
-                setBranches(r.data);
-                if (!branchId && !selectedBranchId && r.data.length > 0) {
-                    setBranchId(r.data[0].id);
-                    setForm((f) => ({ ...f, branch_id: r.data[0].id }));
+            const brUrl = `/admin/branches?restaurant_id=${rid}`;
+            const cachedBr = getClientCached<any[]>(brUrl);
+            if (cachedBr) {
+                setBranches(cachedBr);
+                if (!branchId && !selectedBranchId && cachedBr.length > 0) {
+                    setBranchId(cachedBr[0].id);
+                    setForm((f) => ({ ...f, branch_id: cachedBr[0].id }));
                 }
-            });
+            }
+            if (!isClientCacheFresh(brUrl, 86_400_000)) {
+                api.get(brUrl).then((r) => {
+                    setBranches(r.data);
+                    if (!branchId && !selectedBranchId && r.data.length > 0) {
+                        setBranchId(r.data[0].id);
+                        setForm((f) => ({ ...f, branch_id: r.data[0].id }));
+                    }
+                });
+            }
         }
     }, []);
 
     useEffect(() => {
+        if (selectedBranchId && !initialStaffObj.branch_id) {
+            setBranchId(selectedBranchId);
+            setForm((f) => ({ ...f, branch_id: selectedBranchId }));
+        }
+    }, [selectedBranchId]);
+
+    useEffect(() => {
         if (!restaurantId || !branchId) return;
+        const url = `/admin/staff?restaurant_id=${restaurantId}&branch_id=${branchId}`;
+        const cached = getClientCached<any[]>(url);
+        if (cached) {
+            setStaff(cached);
+            if (isClientCacheFresh(url, 86_400_000)) return;
+        }
         reloadStaff();
     }, [restaurantId, branchId]);
 

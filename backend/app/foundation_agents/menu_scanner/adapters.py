@@ -98,6 +98,10 @@ class HelloDineAdapter(BaseMenuDatabaseAdapter):
         try:
             from app.services.cache_service import cache
             cache.invalidate_prefix(f"menu:{branch_id}")
+            cache.invalidate_prefix(f"menu_categories:{branch_id}")
+            cache.invalidate_prefix(f"menu_items:{branch_id}")
+            cache.invalidate_prefix(f"static_menu:{branch_id}")
+            cache.invalidate_prefix(f"ai_static_context:{branch_id}")
         except Exception:
             pass
 

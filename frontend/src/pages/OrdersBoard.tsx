@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import api, { WS_BASE_URL } from "../api/client";
+import api, { WS_BASE_URL, getClientCached, isClientCacheFresh, invalidateClientCachePrefix } from "../api/client";
 import { formatDistanceToNow } from "date-fns";
 import { useBranch } from "../context/BranchContext";
 
@@ -243,34 +243,42 @@ function OrderCard({
 
 export default function OrdersBoard() {
     const { selectedBranchId } = useBranch();
-    const [orders, setOrders] = useState<Order[]>([]);
-    const [branchId, setBranchId] = useState<string>("");
-    const [userRole, setUserRole] = useState<string>("");
+    const initialStaff = (() => {
+        try {
+            return JSON.parse(localStorage.getItem("hd_staff") || "{}");
+        } catch {
+            return {};
+        }
+    })();
+    const initialRole = initialStaff.role || "";
+    const initialFilterMode: "today" | "all" | "date" = ["BRANCH_ADMIN", "SUPER_ADMIN", "SYSTEM_ADMIN"].includes(initialRole)
+        ? "all"
+        : "today";
+
+    const initialBranchId = initialStaff.branch_id || selectedBranchId || localStorage.getItem("hd_selected_branch") || "";
+    const initialOrdersUrl = initialBranchId
+        ? `/orders?branch_id=${initialBranchId}&served_filter=${encodeURIComponent(initialFilterMode)}`
+        : "";
+
+    const [orders, setOrders] = useState<Order[]>(() => (initialOrdersUrl ? getClientCached<Order[]>(initialOrdersUrl) || [] : []));
+    const [branchId, setBranchId] = useState<string>(initialBranchId);
+    const [userRole, setUserRole] = useState<string>(initialRole);
     const [birthdayBanner, setBirthdayBanner] = useState<{ table_number: string; birthday_name: string } | null>(null);
     const [advancingId, setAdvancingId] = useState<string | null>(null);
     // Served column filter: Cashier defaults to "today", Admins default to "all"
-    const [servedFilterMode, setServedFilterMode] = useState<"today" | "all" | "date">("today");
+    const [servedFilterMode, setServedFilterMode] = useState<"today" | "all" | "date">(initialFilterMode);
     const [servedFilterDate, setServedFilterDate] = useState<string>(() => new Date().toLocaleDateString("en-CA"));
+    // Super Admin Orders Table multi-key filter state
+    const [adminSearchKey, setAdminSearchKey] = useState<string>("");
+    const [adminStatusFilter, setAdminStatusFilter] = useState<string>("ALL");
+    const [adminTableFilter, setAdminTableFilter] = useState<string>("ALL");
+    const [adminSortKey, setAdminSortKey] = useState<"NEWEST" | "OLDEST" | "HIGH_TOTAL" | "LOW_TOTAL">("NEWEST");
     const wsRef = useRef<WebSocket | null>(null);
-    const servedFilterParamRef = useRef<string>("today");
+    const servedFilterParamRef = useRef<string>(initialFilterMode);
+    const lastFetchTsRef = useRef<number>(0);
 
     useEffect(() => {
-        const staff = JSON.parse(localStorage.getItem("hd_staff") || "{}");
-        if (staff.role) {
-            setUserRole(staff.role);
-            // Admins (BRANCH_ADMIN, SUPER_ADMIN, SYSTEM_ADMIN) default to seeing ALL served orders;
-            // Cashier defaults to seeing TODAY's served orders
-            if (["BRANCH_ADMIN", "SUPER_ADMIN", "SYSTEM_ADMIN"].includes(staff.role)) {
-                setServedFilterMode("all");
-                servedFilterParamRef.current = "all";
-            } else {
-                setServedFilterMode("today");
-                servedFilterParamRef.current = "today";
-            }
-        }
-        if (staff.branch_id) {
-            setBranchId(staff.branch_id);
-        } else if (selectedBranchId) {
+        if (selectedBranchId && !initialStaff.branch_id) {
             setBranchId(selectedBranchId);
         }
     }, [selectedBranchId]);
@@ -281,10 +289,20 @@ export default function OrdersBoard() {
         return "today";
     }
 
-    async function fetchOrders(customServedFilter?: string) {
+    async function fetchOrders(customServedFilter?: string, forceNetwork = false) {
         if (!branchId) return;
         const sf = customServedFilter ?? servedFilterParamRef.current;
-        const res = await api.get(`/orders?branch_id=${branchId}&served_filter=${encodeURIComponent(sf)}`);
+        const url = `/orders?branch_id=${branchId}&served_filter=${encodeURIComponent(sf)}`;
+        const cached = getClientCached<Order[]>(url);
+        if (cached) {
+            setOrders(cached);
+            // If cache is fresh and we aren't forcing a live WebSocket refresh, skip the network hit!
+            if (!forceNetwork && isClientCacheFresh(url, 60_000)) {
+                return;
+            }
+        }
+        lastFetchTsRef.current = Date.now();
+        const res = await api.get(url);
         setOrders(res.data);
     }
 
@@ -292,16 +310,16 @@ export default function OrdersBoard() {
         const param = getServedFilterParam(servedFilterMode, servedFilterDate);
         servedFilterParamRef.current = param;
         if (branchId) {
-            fetchOrders(param);
+            fetchOrders(param, false);
         }
-    }, [servedFilterMode, servedFilterDate]);
+    }, [branchId, servedFilterMode, servedFilterDate]);
 
     useEffect(() => {
         if (!branchId) return;
-        fetchOrders();
 
         let isUnmounted = false;
         let reconnectTimeout: any = null;
+        let connectDelayTimeout: any = null;
         const wsUrl = `${WS_BASE_URL}/orders/ws/kitchen/${branchId}`;
 
         function connectWs() {
@@ -310,8 +328,12 @@ export default function OrdersBoard() {
             wsRef.current = ws;
 
             ws.onopen = () => {
-                // Instantly sync latest orders as soon as WebSocket connects/reconnects
-                fetchOrders();
+                // Only sync on WS reconnect if cache is not fresh
+                const sf = servedFilterParamRef.current;
+                const url = `/orders?branch_id=${branchId}&served_filter=${encodeURIComponent(sf)}`;
+                if (!isClientCacheFresh(url, 60_000) && Date.now() - lastFetchTsRef.current > 3000) {
+                    fetchOrders(sf, true);
+                }
             };
 
             ws.onmessage = (event) => {
@@ -328,12 +350,14 @@ export default function OrdersBoard() {
                         setOrders((prev) =>
                             prev.map((o) => (o.id === payload.order_id ? { ...o, status: payload.status } : o))
                         );
+                        invalidateClientCachePrefix(`/orders?branch_id=${branchId}`);
                         return;
                     }
                 } catch {
                     // ignore parse errors
                 }
-                fetchOrders();
+                invalidateClientCachePrefix(`/orders?branch_id=${branchId}`);
+                fetchOrders(undefined, true);
             };
 
             ws.onclose = () => {
@@ -347,18 +371,20 @@ export default function OrdersBoard() {
             };
         }
 
-        connectWs();
+        // Delay WS creation by 50ms so React 18 StrictMode's instant dev unmount doesn't open 2 sockets
+        connectDelayTimeout = setTimeout(connectWs, 50);
 
         // Option A Smart Fallback: Only poll if WebSocket is NOT currently connected
         const interval = setInterval(() => {
             const currentWs = wsRef.current;
             if (!currentWs || currentWs.readyState !== WebSocket.OPEN) {
-                fetchOrders();
+                fetchOrders(undefined, true);
             }
         }, 15000);
 
         return () => {
             isUnmounted = true;
+            if (connectDelayTimeout) clearTimeout(connectDelayTimeout);
             if (reconnectTimeout) clearTimeout(reconnectTimeout);
             clearInterval(interval);
             if (wsRef.current) wsRef.current.close();
@@ -409,6 +435,391 @@ export default function OrdersBoard() {
             .finally(() => {
                 setAdvancingId(null);
             });
+    }
+
+    const isSuperAdminView = userRole === "SUPER_ADMIN" || userRole === "SYSTEM_ADMIN";
+
+    // Unique table numbers for Super Admin table dropdown filter
+    const availableTables = Array.from(
+        new Set(
+            orders
+                .map((o) => o.table?.table_number)
+                .filter((num): num is number => typeof num === "number")
+        )
+    ).sort((a, b) => a - b);
+
+    // Filtered & sorted orders for Super Admin Orders Table view
+    const superAdminFilteredOrders = orders
+        .filter((o) => {
+            // 1. Date filter (All / Today / Specific Date)
+            if (!matchesServedFilter(o.created_at)) return false;
+
+            // 2. Status filter
+            if (adminStatusFilter === "ACTIVE") {
+                if (!["NEW", "ACCEPTED", "PREPARING", "READY"].includes(o.status)) return false;
+            } else if (adminStatusFilter !== "ALL") {
+                if (o.status !== adminStatusFilter) return false;
+            }
+
+            // 3. Table filter
+            if (adminTableFilter !== "ALL") {
+                const tNum = String(o.table?.table_number ?? "");
+                if (tNum !== adminTableFilter) return false;
+            }
+
+            // 4. Search keyword filter (Order #, Table #, Dish Name, Notes)
+            if (adminSearchKey.trim()) {
+                const q = adminSearchKey.trim().toLowerCase();
+                const ordNum = (o.order_number || "").toLowerCase();
+                const tblStr = `t${o.table?.table_number ?? ""}`.toLowerCase();
+                const itemsMatch = (o.items || []).some(
+                    (it) =>
+                        (it.menu_item?.name || "").toLowerCase().includes(q) ||
+                        (it.notes || "").toLowerCase().includes(q)
+                );
+                if (!ordNum.includes(q) && !tblStr.includes(q) && !itemsMatch) {
+                    return false;
+                }
+            }
+
+            return true;
+        })
+        .sort((a, b) => {
+            if (adminSortKey === "OLDEST") {
+                return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+            }
+            if (adminSortKey === "HIGH_TOTAL") {
+                return Number(b.total) - Number(a.total);
+            }
+            if (adminSortKey === "LOW_TOTAL") {
+                return Number(a.total) - Number(b.total);
+            }
+            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        });
+
+    if (isSuperAdminView) {
+        const filteredRevenue = superAdminFilteredOrders
+            .filter((o) => o.status !== "CANCELLED")
+            .reduce((sum, o) => sum + Number(o.total || 0), 0);
+
+        return (
+            <div style={{ maxWidth: 1400, margin: "0 auto", paddingBottom: 32 }}>
+                <div className="page-header" style={{ marginBottom: 16 }}>
+                    <div>
+                        <h1 className="page-title">Orders Directory & Audit Table</h1>
+                        <p className="page-sub">
+                            Filter and inspect all branch orders by Order #, Table, Status, Dish Name, Date, and Amount
+                        </p>
+                    </div>
+                    <div className="flex gap-2 items-center">
+                        <div
+                            className="pulse"
+                            style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--green)" }}
+                        />
+                        <span className="text-sm text-muted">Live Sync</span>
+                        <button className="btn btn-outline btn-sm" onClick={() => fetchOrders()}>
+                            🔄 Refresh
+                        </button>
+                    </div>
+                </div>
+
+                {/* SUMMARY METRICS STRIP */}
+                <div
+                    style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(175px, 1fr))",
+                        gap: 12,
+                        marginBottom: 16,
+                    }}
+                >
+                    <div className="card card-sm" style={{ padding: "12px 16px" }}>
+                        <div className="text-muted" style={{ fontSize: "0.75rem", fontWeight: 600 }}>
+                            MATCHING ORDERS
+                        </div>
+                        <div style={{ fontSize: "1.55rem", fontWeight: 800, color: "var(--text)" }}>
+                            {superAdminFilteredOrders.length}
+                        </div>
+                    </div>
+                    <div className="card card-sm" style={{ padding: "12px 16px" }}>
+                        <div className="text-muted" style={{ fontSize: "0.75rem", fontWeight: 600 }}>
+                            ACTIVE IN KITCHEN
+                        </div>
+                        <div style={{ fontSize: "1.55rem", fontWeight: 800, color: "var(--orange)" }}>
+                            {
+                                superAdminFilteredOrders.filter((o) =>
+                                    ["NEW", "ACCEPTED", "PREPARING", "READY"].includes(o.status)
+                                ).length
+                            }
+                        </div>
+                    </div>
+                    <div className="card card-sm" style={{ padding: "12px 16px" }}>
+                        <div className="text-muted" style={{ fontSize: "0.75rem", fontWeight: 600 }}>
+                            SERVED ORDERS
+                        </div>
+                        <div style={{ fontSize: "1.55rem", fontWeight: 800, color: "var(--green)" }}>
+                            {superAdminFilteredOrders.filter((o) => o.status === "SERVED").length}
+                        </div>
+                    </div>
+                    <div className="card card-sm" style={{ padding: "12px 16px" }}>
+                        <div className="text-muted" style={{ fontSize: "0.75rem", fontWeight: 600 }}>
+                            MATCHING ORDER VALUE
+                        </div>
+                        <div style={{ fontSize: "1.55rem", fontWeight: 800, color: "var(--accent)" }}>
+                            ₹{filteredRevenue.toFixed(0)}
+                        </div>
+                    </div>
+                </div>
+
+                {/* MULTI-KEY FILTER BAR */}
+                <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+                    <div
+                        style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(auto-fit, minmax(185px, 1fr))",
+                            gap: 12,
+                            alignItems: "end",
+                        }}
+                    >
+                        {/* 1. Search by Order #, Table, or Dish */}
+                        <div>
+                            <label className="input-label" style={{ display: "block", marginBottom: 5 }}>
+                                🔍 Search (Order #, Dish, Table)
+                            </label>
+                            <input
+                                type="text"
+                                className="input"
+                                placeholder="e.g. ORD-155, Biryani, T3..."
+                                value={adminSearchKey}
+                                onChange={(e) => setAdminSearchKey(e.target.value)}
+                                style={{ padding: "8px 12px", fontSize: "0.85rem" }}
+                            />
+                        </div>
+
+                        {/* 2. Filter by Status */}
+                        <div>
+                            <label className="input-label" style={{ display: "block", marginBottom: 5 }}>
+                                📌 Order Status
+                            </label>
+                            <select
+                                className="select"
+                                value={adminStatusFilter}
+                                onChange={(e) => setAdminStatusFilter(e.target.value)}
+                                style={{ width: "100%", padding: "8px 12px", fontSize: "0.85rem" }}
+                            >
+                                <option value="ALL">All Statuses</option>
+                                <option value="ACTIVE">🔥 Active (Kitchen + Ready)</option>
+                                <option value="SERVED">🍽️ Served</option>
+                                <option value="NEW">🆕 New</option>
+                                <option value="ACCEPTED">✅ Accepted</option>
+                                <option value="PREPARING">👨‍🍳 Preparing</option>
+                                <option value="READY">🔔 Ready</option>
+                                <option value="CANCELLED">❌ Cancelled</option>
+                            </select>
+                        </div>
+
+                        {/* 3. Filter by Table */}
+                        <div>
+                            <label className="input-label" style={{ display: "block", marginBottom: 5 }}>
+                                🪑 Table Number
+                            </label>
+                            <select
+                                className="select"
+                                value={adminTableFilter}
+                                onChange={(e) => setAdminTableFilter(e.target.value)}
+                                style={{ width: "100%", padding: "8px 12px", fontSize: "0.85rem" }}
+                            >
+                                <option value="ALL">All Tables</option>
+                                {availableTables.map((num) => (
+                                    <option key={num} value={String(num)}>
+                                        Table T{num}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {/* 4. Filter by Date (All / Today / Date Picker) */}
+                        <div>
+                            <label className="input-label" style={{ display: "block", marginBottom: 5 }}>
+                                📅 Date Range
+                            </label>
+                            <div className="flex gap-2 items-center">
+                                <button
+                                    type="button"
+                                    className="btn btn-sm"
+                                    style={{
+                                        padding: "7px 10px",
+                                        background: servedFilterMode === "all" ? "var(--accent)" : "rgba(255,255,255,0.06)",
+                                        color: servedFilterMode === "all" ? "#fff" : "var(--text-muted)",
+                                    }}
+                                    onClick={() => setServedFilterMode("all")}
+                                >
+                                    All
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-sm"
+                                    style={{
+                                        padding: "7px 10px",
+                                        background: servedFilterMode === "today" ? "var(--accent)" : "rgba(255,255,255,0.06)",
+                                        color: servedFilterMode === "today" ? "#fff" : "var(--text-muted)",
+                                    }}
+                                    onClick={() => setServedFilterMode("today")}
+                                >
+                                    Today
+                                </button>
+                                <input
+                                    type="date"
+                                    value={servedFilterDate}
+                                    max={todayDateStr}
+                                    onChange={(e) => {
+                                        setServedFilterDate(e.target.value);
+                                        setServedFilterMode("date");
+                                    }}
+                                    style={{
+                                        flex: 1,
+                                        minWidth: 120,
+                                        padding: "6px 8px",
+                                        fontSize: "0.8rem",
+                                        borderRadius: 6,
+                                        background: servedFilterMode === "date" ? "rgba(108,99,255,0.2)" : "var(--bg-base)",
+                                        border: servedFilterMode === "date" ? "1px solid var(--accent)" : "1px solid var(--border)",
+                                        color: "var(--text)",
+                                        colorScheme: "dark",
+                                    }}
+                                />
+                            </div>
+                        </div>
+
+                        {/* 5. Sort By + Reset */}
+                        <div>
+                            <label className="input-label" style={{ display: "block", marginBottom: 5 }}>
+                                ↕️ Sort By
+                            </label>
+                            <div className="flex gap-2">
+                                <select
+                                    className="select"
+                                    value={adminSortKey}
+                                    onChange={(e) => setAdminSortKey(e.target.value as any)}
+                                    style={{ flex: 1, padding: "8px 10px", fontSize: "0.85rem" }}
+                                >
+                                    <option value="NEWEST">Newest First</option>
+                                    <option value="OLDEST">Oldest First</option>
+                                    <option value="HIGH_TOTAL">Amount: High → Low</option>
+                                    <option value="LOW_TOTAL">Amount: Low → High</option>
+                                </select>
+                                <button
+                                    type="button"
+                                    className="btn btn-outline btn-sm"
+                                    onClick={() => {
+                                        setAdminSearchKey("");
+                                        setAdminStatusFilter("ALL");
+                                        setAdminTableFilter("ALL");
+                                        setServedFilterMode("all");
+                                        setAdminSortKey("NEWEST");
+                                    }}
+                                    title="Reset all filters"
+                                >
+                                    Reset
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* ORDERS TABLE */}
+                <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+                    <div className="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Order #</th>
+                                    <th>Table</th>
+                                    <th>Ordered Items</th>
+                                    <th>Status</th>
+                                    <th>Total Amount</th>
+                                    <th>Date & Time</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {superAdminFilteredOrders.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={6} className="text-muted" style={{ textAlign: "center", padding: 32 }}>
+                                            No orders match the selected filters.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    superAdminFilteredOrders.map((o) => {
+                                        const tableLabel = o.table?.table_number ?? o.table_id?.slice(-4) ?? "—";
+                                        const dt = o.created_at ? new Date(o.created_at) : null;
+                                        return (
+                                            <tr key={o.id}>
+                                                <td style={{ fontWeight: 700, whiteSpace: "nowrap" }}>
+                                                    #{o.order_number}
+                                                </td>
+                                                <td>
+                                                    <span
+                                                        style={{
+                                                            fontWeight: 800,
+                                                            padding: "3px 10px",
+                                                            borderRadius: 6,
+                                                            background: "rgba(108, 99, 255, 0.15)",
+                                                            color: "var(--accent)",
+                                                        }}
+                                                    >
+                                                        T{tableLabel}
+                                                    </span>
+                                                </td>
+                                                <td style={{ maxWidth: 420 }}>
+                                                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                                                        {o.items.map((item) => (
+                                                            <div key={item.id} style={{ fontSize: "0.84rem" }}>
+                                                                <span style={{ fontWeight: 600 }}>
+                                                                    {item.quantity}× {item.menu_item?.name || "Item"}
+                                                                </span>
+                                                                {item.variant && (
+                                                                    <span className="text-muted" style={{ fontSize: "0.76rem", marginLeft: 6 }}>
+                                                                        ({item.variant.name})
+                                                                    </span>
+                                                                )}
+                                                                {item.notes && (
+                                                                    <span style={{ color: "var(--orange)", fontSize: "0.75rem", marginLeft: 6 }}>
+                                                                        📝 {item.notes}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </td>
+                                                <td>
+                                                    <span className={`badge badge-${o.status.toLowerCase()}`}>
+                                                        {o.status}
+                                                    </span>
+                                                </td>
+                                                <td style={{ fontWeight: 800, color: "var(--green)", whiteSpace: "nowrap" }}>
+                                                    ₹{Number(o.total).toFixed(2)}
+                                                </td>
+                                                <td className="text-muted" style={{ fontSize: "0.8rem", whiteSpace: "nowrap" }}>
+                                                    {dt
+                                                        ? `${dt.toLocaleDateString("en-IN", {
+                                                              day: "2-digit",
+                                                              month: "short",
+                                                              year: "numeric",
+                                                          })} · ${dt.toLocaleTimeString([], {
+                                                              hour: "2-digit",
+                                                              minute: "2-digit",
+                                                          })}`
+                                                        : "—"}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        );
     }
 
     return (

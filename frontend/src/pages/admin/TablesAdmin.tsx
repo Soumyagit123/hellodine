@@ -1,10 +1,22 @@
 import { useEffect, useState } from "react";
-import api from "../../api/client";
+import api, { getClientCached, isClientCacheFresh } from "../../api/client";
 import { QRCodeCanvas } from "qrcode.react";
+import { useBranch } from "../../context/BranchContext";
 
 export default function TablesAdmin() {
-    const [tables, setTables] = useState<any[]>([]);
-    const [branchId, setBranchId] = useState<string>("");
+    const { selectedBranchId } = useBranch();
+    const initialStaff = (() => {
+        try {
+            return JSON.parse(localStorage.getItem("hd_staff") || "{}");
+        } catch {
+            return {};
+        }
+    })();
+    const initialBranchId = initialStaff.branch_id || selectedBranchId || localStorage.getItem("hd_selected_branch") || "";
+    const initialTables = initialBranchId ? getClientCached<any[]>(`/admin/tables?branch_id=${initialBranchId}`) || [] : [];
+
+    const [tables, setTables] = useState<any[]>(initialTables);
+    const [branchId, setBranchId] = useState<string>(initialBranchId);
     const [newNum, setNewNum] = useState("");
     const [showAdd, setShowAdd] = useState(false);
     const [editingTable, setEditingTable] = useState<any | null>(null);
@@ -42,7 +54,19 @@ export default function TablesAdmin() {
     }, [showAdd]);
 
     useEffect(() => {
+        if (selectedBranchId && !initialStaff.branch_id) {
+            setBranchId(selectedBranchId);
+        }
+    }, [selectedBranchId]);
+
+    useEffect(() => {
         if (!branchId) return;
+        const url = `/admin/tables?branch_id=${branchId}`;
+        const cached = getClientCached<any[]>(url);
+        if (cached) {
+            setTables(cached);
+            if (isClientCacheFresh(url, 86_400_000)) return;
+        }
         reloadTables();
     }, [branchId]);
 

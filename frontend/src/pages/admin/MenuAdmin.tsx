@@ -1,12 +1,28 @@
 import { useEffect, useState } from "react";
-import api from "../../api/client";
+import api, { getClientCached, isClientCacheFresh } from "../../api/client";
 import MenuImportModal from "../../components/MenuImportModal";
+import { useBranch } from "../../context/BranchContext";
 
 export default function MenuAdmin() {
-    const [categories, setCategories] = useState<any[]>([]);
-    const [items, setItems] = useState<any[]>([]);
-    const [selectedCat, setSelectedCat] = useState<string>("");
-    const [branchId, setBranchId] = useState<string>("");
+    const { selectedBranchId } = useBranch();
+    const initialStaff = (() => {
+        try {
+            return JSON.parse(localStorage.getItem("hd_staff") || "{}");
+        } catch {
+            return {};
+        }
+    })();
+    const initialBranchId = initialStaff.branch_id || selectedBranchId || localStorage.getItem("hd_selected_branch") || "";
+    const initialCats = initialBranchId ? getClientCached<any[]>(`/menu/categories?branch_id=${initialBranchId}`) || [] : [];
+    const initialCatId = initialCats.length > 0 ? initialCats[0].id : "";
+    const initialItems = initialBranchId && initialCatId
+        ? getClientCached<any[]>(`/menu/items?branch_id=${initialBranchId}&category_id=${initialCatId}`) || []
+        : [];
+
+    const [categories, setCategories] = useState<any[]>(initialCats);
+    const [items, setItems] = useState<any[]>(initialItems);
+    const [selectedCat, setSelectedCat] = useState<string>(initialCatId);
+    const [branchId, setBranchId] = useState<string>(initialBranchId);
 
     // Category Modals
     const [showNewCat, setShowNewCat] = useState(false);
@@ -28,31 +44,21 @@ export default function MenuAdmin() {
     });
 
     useEffect(() => {
-        const staff = JSON.parse(localStorage.getItem("hd_staff") || "{}");
-        const selectedBranchId = localStorage.getItem("hd_selected_branch");
-
-        if (staff.branch_id) {
-            setBranchId(staff.branch_id);
-        } else if (selectedBranchId) {
+        if (selectedBranchId && !initialStaff.branch_id) {
             setBranchId(selectedBranchId);
-        } else {
-            const token = localStorage.getItem("hd_token");
-            if (token) {
-                try {
-                    const payload = JSON.parse(atob(token.split(".")[1]));
-                    if (payload.restaurant_id) {
-                        api.get(`/admin/branches?restaurant_id=${payload.restaurant_id}`).then((r) => {
-                            if (r.data.length > 0) setBranchId(r.data[0].id);
-                        });
-                    }
-                } catch { }
-            }
         }
-    }, []);
+    }, [selectedBranchId]);
 
     useEffect(() => {
         if (!branchId) return;
-        api.get(`/menu/categories?branch_id=${branchId}`).then((r) => {
+        const catUrl = `/menu/categories?branch_id=${branchId}`;
+        const cachedCats = getClientCached<any[]>(catUrl, 120_000);
+        if (cachedCats && cachedCats.length > 0) {
+            setCategories(cachedCats);
+            if (!selectedCat) setSelectedCat(cachedCats[0].id);
+            if (isClientCacheFresh(catUrl, 90_000)) return;
+        }
+        api.get(catUrl).then((r) => {
             setCategories(r.data);
             if (r.data.length > 0 && !selectedCat) {
                 setSelectedCat(r.data[0].id);
@@ -62,7 +68,13 @@ export default function MenuAdmin() {
 
     useEffect(() => {
         if (!selectedCat || !branchId) return;
-        api.get(`/menu/items?branch_id=${branchId}&category_id=${selectedCat}`).then((r) => setItems(r.data));
+        const itemUrl = `/menu/items?branch_id=${branchId}&category_id=${selectedCat}`;
+        const cachedItems = getClientCached<any[]>(itemUrl, 120_000);
+        if (cachedItems) {
+            setItems(cachedItems);
+            if (isClientCacheFresh(itemUrl, 90_000)) return;
+        }
+        api.get(itemUrl).then((r) => setItems(r.data));
     }, [selectedCat, branchId]);
 
     async function reloadCategories() {
