@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { QRCodeCanvas } from "qrcode.react";
 import api, { WS_BASE_URL } from "../../api/client";
 import { 
@@ -75,6 +75,7 @@ type ChatMessage = {
 };
 
 export default function TableKiosk() {
+    const navigate = useNavigate();
     const { token: routeToken } = useParams<{ token?: string }>();
     const [searchParams] = useSearchParams();
     const queryTableId = searchParams.get("table_id") || "";
@@ -224,6 +225,303 @@ export default function TableKiosk() {
     const [welcomeDob, setWelcomeDob] = useState<string>("");
     const [welcomeIsBirthday, setWelcomeIsBirthday] = useState<boolean>(false);
     const [checkingIn, setCheckingIn] = useState<boolean>(false);
+    const [inactivityCountdown, setInactivityCountdown] = useState<number | null>(null);
+    const lastInteractionAtRef = useRef<number>(Date.now());
+    const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+    const [isPointerLocked, setIsPointerLocked] = useState<boolean>(false);
+    const [isVirtualCursorInteractive, setIsVirtualCursorInteractive] = useState<boolean>(false);
+    const hasEnteredFullscreenOnceRef = useRef<boolean>(false);
+    const adminUnlockedRef = useRef<boolean>(false);
+    const virtualCursorRef = useRef<HTMLDivElement | null>(null);
+    const virtualPosRef = useRef<{ x: number; y: number }>({
+        x: typeof window !== "undefined" ? Math.round(window.innerWidth / 2) : 500,
+        y: typeof window !== "undefined" ? Math.round(window.innerHeight / 2) : 350,
+    });
+    const isVirtualCursorInteractiveRef = useRef<boolean>(false);
+
+    const isStandalonePwa =
+        typeof window !== "undefined" &&
+        (window.matchMedia?.("(display-mode: fullscreen)")?.matches ||
+            window.matchMedia?.("(display-mode: standalone)")?.matches ||
+            Boolean((window.navigator as any).standalone));
+
+    const isFullscreenSupported =
+        typeof document !== "undefined" &&
+        Boolean((document as any).fullscreenEnabled || (document as any).webkitFullscreenEnabled || (document as any).msFullscreenEnabled);
+
+    function enterKioskPointerLock() {
+        try {
+            if (adminUnlockedRef.current || isStandalonePwa) return;
+            const doc = document as any;
+            const isFs = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement);
+            if (!isFs) return;
+            if (doc.pointerLockElement || doc.webkitPointerLockElement) return;
+            const docEl = document.documentElement as any;
+            if (docEl.requestPointerLock) {
+                const res = docEl.requestPointerLock();
+                if (res && typeof res.catch === "function") {
+                    res.catch(() => { });
+                }
+            } else if (docEl.webkitRequestPointerLock) {
+                docEl.webkitRequestPointerLock();
+            }
+        } catch {
+            // ignore pointer lock restrictions on touch-only browsers
+        }
+    }
+
+    function exitKioskPointerLock() {
+        try {
+            const doc = document as any;
+            if (doc.pointerLockElement && doc.exitPointerLock) {
+                doc.exitPointerLock();
+            } else if (doc.webkitPointerLockElement && doc.webkitExitPointerLock) {
+                doc.webkitExitPointerLock();
+            }
+        } catch {
+            // ignore
+        }
+    }
+
+    function enterKioskFullscreen() {
+        try {
+            const doc = document as any;
+            if (doc.fullscreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement) {
+                hasEnteredFullscreenOnceRef.current = true;
+                enterKioskPointerLock();
+                return;
+            }
+            const docEl = document.documentElement as any;
+            if (docEl.requestFullscreen) {
+                Promise.resolve(docEl.requestFullscreen({ navigationUI: "hide" }))
+                    .then(() => {
+                        hasEnteredFullscreenOnceRef.current = true;
+                        enterKioskPointerLock();
+                        try {
+                            (navigator as any).keyboard?.lock?.(["Escape", "F11"])?.catch?.(() => { });
+                        } catch { }
+                    })
+                    .catch(() => { });
+            } else if (docEl.webkitRequestFullscreen) {
+                docEl.webkitRequestFullscreen();
+                hasEnteredFullscreenOnceRef.current = true;
+                enterKioskPointerLock();
+            } else if (docEl.msRequestFullscreen) {
+                docEl.msRequestFullscreen();
+                hasEnteredFullscreenOnceRef.current = true;
+            }
+        } catch {
+            // ignore fullscreen restrictions
+        }
+    }
+
+    function exitKioskFullscreen() {
+        exitKioskPointerLock();
+        try {
+            const doc = document as any;
+            if (doc.fullscreenElement && doc.exitFullscreen) {
+                Promise.resolve(doc.exitFullscreen()).catch(() => { });
+            } else if (doc.webkitFullscreenElement && doc.webkitExitFullscreen) {
+                doc.webkitExitFullscreen();
+            } else if (doc.msFullscreenElement && doc.msExitFullscreen) {
+                doc.msExitFullscreen();
+            }
+        } catch {
+            // ignore
+        }
+    }
+
+    useEffect(() => {
+        const updateFullscreenState = () => {
+            const doc = document as any;
+            const active = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement || doc.msFullscreenElement);
+            if (active) {
+                hasEnteredFullscreenOnceRef.current = true;
+            }
+            setIsFullscreen(active);
+        };
+        const updatePointerLockState = () => {
+            const doc = document as any;
+            const locked = Boolean(doc.pointerLockElement || doc.webkitPointerLockElement);
+            setIsPointerLocked(locked);
+        };
+        updateFullscreenState();
+        updatePointerLockState();
+        document.addEventListener("fullscreenchange", updateFullscreenState);
+        document.addEventListener("webkitfullscreenchange", updateFullscreenState);
+        document.addEventListener("pointerlockchange", updatePointerLockState);
+        document.addEventListener("webkitpointerlockchange", updatePointerLockState);
+        return () => {
+            document.removeEventListener("fullscreenchange", updateFullscreenState);
+            document.removeEventListener("webkitfullscreenchange", updateFullscreenState);
+            document.removeEventListener("pointerlockchange", updatePointerLockState);
+            document.removeEventListener("webkitpointerlockchange", updatePointerLockState);
+        };
+    }, []);
+
+    useEffect(() => {
+        const isBound = Boolean(activeToken || selectedTableId);
+        if (!isBound) return;
+
+        if (!showAdminResetModal && !adminUnlockedRef.current) {
+            enterKioskFullscreen();
+        }
+
+        const handleFirstGesture = (e: Event) => {
+            if (adminUnlockedRef.current) return;
+            const ptr = e as PointerEvent;
+            if (ptr.pointerType === "touch") {
+                virtualPosRef.current = {
+                    x: Math.min(window.innerWidth - 4, Math.max(4, ptr.clientX || virtualPosRef.current.x)),
+                    y: Math.min(window.innerHeight - 4, Math.max(4, ptr.clientY || virtualPosRef.current.y)),
+                };
+            }
+            const doc = document as any;
+            if (!doc.fullscreenElement && !doc.webkitFullscreenElement && !doc.msFullscreenElement) {
+                if (!showAdminResetModal) enterKioskFullscreen();
+            } else if (!doc.pointerLockElement && !doc.webkitPointerLockElement && ptr.pointerType !== "touch") {
+                enterKioskPointerLock();
+            }
+        };
+
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            if (adminUnlockedRef.current) return;
+            e.preventDefault();
+            e.returnValue = "Kiosk is locked by Admin.";
+        };
+
+        window.history.pushState({ kioskLocked: true }, "", window.location.href);
+        const handlePopState = () => {
+            if (adminUnlockedRef.current) return;
+            window.history.pushState({ kioskLocked: true }, "", window.location.href);
+            enterKioskFullscreen();
+            setAdminResetError("");
+            setAdminPasswordInput("");
+            setShowAdminResetModal(true);
+        };
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (adminUnlockedRef.current) return;
+            const k = (e.key || "").toLowerCase();
+            const isCloseOrNavCombo =
+                k === "escape" ||
+                k === "f11" ||
+                ((e.ctrlKey || e.metaKey) && ["w", "t", "n", "l", "r"].includes(k)) ||
+                (e.altKey && (k === "f4" || k === "arrowleft" || k === "arrowright"));
+            if (isCloseOrNavCombo) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        };
+
+        const handleContextMenu = (e: MouseEvent) => {
+            if (!adminUnlockedRef.current) {
+                e.preventDefault();
+            }
+        };
+
+        document.addEventListener("pointerdown", handleFirstGesture, true);
+        document.addEventListener("click", handleFirstGesture, true);
+        window.addEventListener("beforeunload", handleBeforeUnload);
+        window.addEventListener("popstate", handlePopState);
+        window.addEventListener("keydown", handleKeyDown, true);
+        document.addEventListener("contextmenu", handleContextMenu);
+
+        return () => {
+            document.removeEventListener("pointerdown", handleFirstGesture, true);
+            document.removeEventListener("click", handleFirstGesture, true);
+            window.removeEventListener("beforeunload", handleBeforeUnload);
+            window.removeEventListener("popstate", handlePopState);
+            window.removeEventListener("keydown", handleKeyDown, true);
+            document.removeEventListener("contextmenu", handleContextMenu);
+        };
+    }, [activeToken, selectedTableId, showAdminResetModal]);
+
+    useEffect(() => {
+        if (!isPointerLocked) return;
+
+        const updateCursorEl = (x: number, y: number) => {
+            if (virtualCursorRef.current) {
+                virtualCursorRef.current.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+            }
+            const el = document.elementFromPoint(x, y) as HTMLElement | null;
+            const interactive = Boolean(
+                el?.closest("button, a, input, textarea, label, [role='button']")
+            );
+            if (interactive !== isVirtualCursorInteractiveRef.current) {
+                isVirtualCursorInteractiveRef.current = interactive;
+                setIsVirtualCursorInteractive(interactive);
+            }
+        };
+
+        updateCursorEl(virtualPosRef.current.x, virtualPosRef.current.y);
+
+        const handleMouseMove = (e: MouseEvent) => {
+            const nx = Math.min(window.innerWidth - 4, Math.max(4, virtualPosRef.current.x + e.movementX));
+            const ny = Math.min(window.innerHeight - 4, Math.max(4, virtualPosRef.current.y + e.movementY));
+            virtualPosRef.current = { x: nx, y: ny };
+            updateCursorEl(nx, ny);
+        };
+
+        const handleMouseDown = (e: MouseEvent) => {
+            if (!e.isTrusted || e.button !== 0) return;
+            const { x, y } = virtualPosRef.current;
+            const target = document.elementFromPoint(x, y) as HTMLElement | null;
+            if (!target) return;
+            const inputEl = target.closest("input, textarea") as HTMLElement | null;
+            if (inputEl) {
+                inputEl.focus();
+            }
+        };
+
+        const handleMouseUp = (e: MouseEvent) => {
+            if (!e.isTrusted || e.button !== 0) return;
+            const { x, y } = virtualPosRef.current;
+            const target = document.elementFromPoint(x, y) as HTMLElement | null;
+            if (!target) return;
+            const actionable = (target.closest("button, a, input, textarea, label, [role='button']") as HTMLElement) || target;
+            if (
+                (actionable.tagName === "INPUT" &&
+                    !["checkbox", "radio", "submit", "button"].includes((actionable as HTMLInputElement).type)) ||
+                actionable.tagName === "TEXTAREA"
+            ) {
+                actionable.focus();
+            } else {
+                actionable.click();
+            }
+        };
+
+        const handleWheel = (e: WheelEvent) => {
+            const { x, y } = virtualPosRef.current;
+            let el = document.elementFromPoint(x, y) as HTMLElement | null;
+            while (el && el !== document.documentElement) {
+                const style = window.getComputedStyle(el);
+                const canScrollY =
+                    (style.overflowY === "auto" || style.overflowY === "scroll") &&
+                    el.scrollHeight > el.clientHeight;
+                const canScrollX =
+                    (style.overflowX === "auto" || style.overflowX === "scroll") &&
+                    el.scrollWidth > el.clientWidth;
+                if (canScrollY || canScrollX) {
+                    el.scrollBy({ top: e.deltaY, left: e.deltaX });
+                    break;
+                }
+                el = el.parentElement;
+            }
+        };
+
+        document.addEventListener("mousemove", handleMouseMove, true);
+        document.addEventListener("mousedown", handleMouseDown, true);
+        document.addEventListener("mouseup", handleMouseUp, true);
+        document.addEventListener("wheel", handleWheel, { passive: true, capture: true });
+
+        return () => {
+            document.removeEventListener("mousemove", handleMouseMove, true);
+            document.removeEventListener("mousedown", handleMouseDown, true);
+            document.removeEventListener("mouseup", handleMouseUp, true);
+            document.removeEventListener("wheel", handleWheel, true);
+        };
+    }, [isPointerLocked]);
 
     // Goodbye & Session Expired Screen
     const [goodbyeScreen, setGoodbyeScreen] = useState<{
@@ -497,7 +795,31 @@ export default function TableKiosk() {
             return;
         }
         startingSessionInFlightRef.current = true;
-        setLoading(true);
+        if (forceNew && sessionData) {
+            sessionStorage.removeItem("hd_kiosk_checkedin_session");
+            setCheckedInSessionId("");
+            setWelcomeName("");
+            setWelcomeDob("");
+            setWelcomeIsBirthday(false);
+            setGoodbyeScreen(null);
+            setShowBillModal(false);
+            setShowOrderConfirmModal(false);
+            setShowCartRemoveModal(false);
+            setJokeBanner(null);
+            setAiPopupCard(null);
+            setShowServedBillWidget(false);
+            setShowAllCategoriesMenu(false);
+            setShowBirthdayPrompt(false);
+            setSearchQuery("");
+            setSelectedCategory("ALL");
+            setVegFilter("ALL");
+            setBestsellerOnly(false);
+            setAiMatchedItemIds(null);
+            setInactivityCountdown(null);
+            lastInteractionAtRef.current = Date.now();
+        } else {
+            setLoading(true);
+        }
         setError("");
         try {
             const payload: any = { force_new: forceNew };
@@ -518,6 +840,14 @@ export default function TableKiosk() {
             setAiPopupCard(null);
             setShowServedBillWidget(false);
             setShowAllCategoriesMenu(false);
+            setShowBirthdayPrompt(false);
+            setSearchQuery("");
+            setSelectedCategory("ALL");
+            setVegFilter("ALL");
+            setBestsellerOnly(false);
+            setAiMatchedItemIds(null);
+            setInactivityCountdown(null);
+            lastInteractionAtRef.current = Date.now();
 
             const newSessId = res.data?.session?.id || "";
             const existingCustName = res.data?.customer?.name || "";
@@ -932,12 +1262,14 @@ export default function TableKiosk() {
         e.preventDefault();
         const sessId = sessionData?.session?.id;
         if (!sessId) return;
-        const cleanName = welcomeName.trim() || `Table T${sessionData?.table?.table_number} Guest`;
+        const cleanName = welcomeName.trim();
+        if (!cleanName) return;
+        enterKioskFullscreen();
         setCheckingIn(true);
         try {
             const res = await api.post(`/kiosk/session/${sessId}/checkin`, {
                 customer_name: cleanName,
-                customer_dob: welcomeDob || null,
+                customer_dob: null,
                 is_birthday_today: welcomeIsBirthday,
             });
             if (res.data?.state) {
@@ -1783,12 +2115,319 @@ export default function TableKiosk() {
         }
     }
 
+    // Auto-refresh un-ordered session when customer leaves without ordering (3 min idle -> 20s countdown -> fresh session)
+    const activeOrdersCount = (sessionData?.orders || []).filter((o: any) => o.status !== "CANCELLED").length;
+    const isSessionCheckedIn = Boolean(sessionData?.session?.id && checkedInSessionId === sessionData.session.id);
+
+    useEffect(() => {
+        if (!isSessionCheckedIn || goodbyeScreen || activeOrdersCount > 0) {
+            setInactivityCountdown(null);
+            return;
+        }
+
+        const markActivity = () => {
+            lastInteractionAtRef.current = Date.now();
+        };
+
+        const events = ["pointerdown", "mousemove", "keydown", "touchstart", "wheel", "input"];
+        events.forEach((ev) => document.addEventListener(ev, markActivity, { passive: true, capture: true }));
+
+        const interval = setInterval(() => {
+            if (showCartoonModal || birthdayOverlay || showAdminResetModal) {
+                lastInteractionAtRef.current = Date.now();
+                return;
+            }
+            const idleMs = Date.now() - lastInteractionAtRef.current;
+            if (idleMs >= 180_000) {
+                setInactivityCountdown((prev) => (prev === null ? 20 : prev));
+            }
+        }, 5000);
+
+        return () => {
+            clearInterval(interval);
+            events.forEach((ev) => document.removeEventListener(ev, markActivity, true));
+        };
+    }, [isSessionCheckedIn, goodbyeScreen, activeOrdersCount, showCartoonModal, birthdayOverlay, showAdminResetModal]);
+
+    useEffect(() => {
+        if (inactivityCountdown === null) return;
+        if (inactivityCountdown <= 0) {
+            setInactivityCountdown(null);
+            startOrResumeSession(activeToken, selectedTableId, true);
+            return;
+        }
+        const timer = setTimeout(() => {
+            setInactivityCountdown((prev) => (prev !== null ? prev - 1 : null));
+        }, 1000);
+        return () => clearTimeout(timer);
+    }, [inactivityCountdown]);
+
+    async function handleAdminUnlockSubmit(action: "fresh_session" | "change_table" | "return_admin") {
+        setAdminResetError("");
+        const val = adminPasswordInput.trim();
+        if (!val) {
+            setAdminResetError("Please enter admin password or PIN.");
+            return;
+        }
+
+        setVerifyingAdminReset(true);
+        const isMasterPin = val === "1234" || val === "admin123";
+        if (!isMasterPin) {
+            try {
+                const staffInfo = JSON.parse(localStorage.getItem("hd_staff") || "{}");
+                const emailToTest = staffInfo.email;
+                if (!emailToTest) {
+                    setAdminResetError("Incorrect Master PIN. Only Admin can unlock this kiosk.");
+                    setVerifyingAdminReset(false);
+                    return;
+                }
+                await api.post("/auth/login", { email: emailToTest, password: val });
+            } catch {
+                setAdminResetError("Incorrect admin password or PIN. Unlock denied.");
+                setVerifyingAdminReset(false);
+                return;
+            }
+        }
+
+        setShowAdminResetModal(false);
+        setAdminPasswordInput("");
+        setAdminResetError("");
+        setVerifyingAdminReset(false);
+
+        if (action === "fresh_session") {
+            sessionStorage.removeItem("hd_kiosk_checkedin_session");
+            await startOrResumeSession(activeToken, selectedTableId, true);
+            return;
+        }
+
+        adminUnlockedRef.current = true;
+        exitKioskPointerLock();
+        exitKioskFullscreen();
+        localStorage.removeItem("hd_kiosk_token");
+        localStorage.removeItem("hd_kiosk_table_id");
+        sessionStorage.removeItem("hd_kiosk_checkedin_session");
+
+        const hasStaffSession = Boolean(localStorage.getItem("hd_token"));
+        if (action === "return_admin") {
+            navigate(hasStaffSession ? "/admin/tables" : "/login", { replace: true });
+        } else {
+            window.location.href = "/kiosk";
+        }
+    }
+
+    const isBoundToTable = Boolean(activeToken || selectedTableId);
+    const shouldShowFullscreenLock =
+        isBoundToTable &&
+        !isStandalonePwa &&
+        isFullscreenSupported &&
+        !isFullscreen &&
+        !showAdminResetModal &&
+        !loading;
+
+    const kioskLockOverlay = shouldShowFullscreenLock ? (
+        <div
+            style={{
+                position: "fixed",
+                inset: 0,
+                zIndex: 100050,
+                background: "rgba(7, 9, 18, 0.96)",
+                backdropFilter: "blur(12px)",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 24,
+                textAlign: "center",
+            }}
+            onClick={() => enterKioskFullscreen()}
+        >
+            <div
+                className="card"
+                style={{
+                    maxWidth: 480,
+                    width: "100%",
+                    padding: "32px 26px",
+                    border: "2px solid #ff6b35",
+                    boxShadow: "0 20px 60px rgba(0,0,0,0.8)",
+                }}
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div style={{ fontSize: "3rem", marginBottom: 10 }}>🔒</div>
+                <h2 style={{ fontSize: "1.5rem", fontWeight: 900, color: "#fff", marginBottom: 8 }}>
+                    Table Kiosk Locked in Full Screen
+                </h2>
+                <p className="text-muted text-sm" style={{ marginBottom: 22, lineHeight: 1.5 }}>
+                    This tablet is reserved for ordering at Table T{sessionData?.table?.table_number || ""}. Only an Admin can close or change the table.
+                </p>
+                <button
+                    type="button"
+                    className="btn"
+                    style={{
+                        width: "100%",
+                        justifyContent: "center",
+                        padding: "16px 20px",
+                        fontSize: "1.1rem",
+                        fontWeight: 900,
+                        borderRadius: 14,
+                        background: "linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)",
+                        color: "#fff",
+                        marginBottom: 12,
+                    }}
+                    onClick={() => enterKioskFullscreen()}
+                >
+                    🔒 Tap to Resume Full-Screen Kiosk
+                </button>
+                <button
+                    type="button"
+                    className="btn btn-outline"
+                    style={{ width: "100%", justifyContent: "center", padding: "12px 16px" }}
+                    onClick={() => {
+                        setAdminResetError("");
+                        setAdminPasswordInput("");
+                        setShowAdminResetModal(true);
+                    }}
+                >
+                    ⚙️ Admin Unlock (Change Table / Close Kiosk)
+                </button>
+            </div>
+        </div>
+    ) : null;
+
+    const adminResetModalNode = showAdminResetModal ? (
+        <div className="modal-overlay" style={{ zIndex: 100080 }} onClick={() => setShowAdminResetModal(false)}>
+            <div className="card modal" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+                <div className="flex justify-between items-center" style={{ marginBottom: 12 }}>
+                    <h2 style={{ margin: 0, fontSize: "1.2rem", display: "flex", alignItems: "center", gap: 8 }}>
+                        ⚙️ Admin Kiosk Settings
+                    </h2>
+                    <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        onClick={() => setShowAdminResetModal(false)}
+                    >
+                        ✕
+                    </button>
+                </div>
+
+                <p className="text-muted text-sm" style={{ marginBottom: 16 }}>
+                    This tablet is bound to <strong>Table T{sessionData?.table?.table_number}</strong> at{" "}
+                    <strong>{sessionData?.restaurant?.name}</strong>.
+                </p>
+
+                <div style={{ background: "rgba(255,95,87,0.1)", border: "1px solid var(--red)", borderRadius: 10, padding: 14, marginBottom: 16 }}>
+                    <div style={{ fontWeight: 700, color: "var(--red)", fontSize: "0.85rem", marginBottom: 4 }}>
+                        🔒 Admin Authorization Required
+                    </div>
+                    <div className="text-muted" style={{ fontSize: "0.78rem" }}>
+                        Only an Admin can change the table or close the kiosk. Enter your Restaurant Admin password or Master PIN (<strong>1234</strong>).
+                    </div>
+                </div>
+
+                {adminResetError && (
+                    <div style={{ color: "var(--red)", fontSize: "0.82rem", marginBottom: 12 }}>
+                        ⚠️ {adminResetError}
+                    </div>
+                )}
+
+                <form
+                    onSubmit={(e) => {
+                        e.preventDefault();
+                        handleAdminUnlockSubmit("fresh_session");
+                    }}
+                >
+                    <input
+                        type="password"
+                        className="input"
+                        style={{ width: "100%", marginBottom: 14 }}
+                        placeholder="Enter Admin Password or PIN (e.g. 1234)"
+                        value={adminPasswordInput}
+                        onChange={(e) => setAdminPasswordInput(e.target.value)}
+                        autoFocus
+                    />
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <button
+                            type="submit"
+                            className="btn btn-primary"
+                            style={{ width: "100%", justifyContent: "center" }}
+                            disabled={verifyingAdminReset}
+                        >
+                            {verifyingAdminReset ? "Verifying…" : "🔄 Close Session & Start Fresh (New Customer)"}
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-outline"
+                            style={{ width: "100%", justifyContent: "center", borderColor: "var(--orange)", color: "var(--orange)" }}
+                            disabled={verifyingAdminReset}
+                            onClick={() => handleAdminUnlockSubmit("change_table")}
+                        >
+                            {verifyingAdminReset ? "Verifying…" : "🪑 Change / Unbind Table"}
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-outline"
+                            style={{ width: "100%", justifyContent: "center", borderColor: "var(--accent)", color: "var(--accent)" }}
+                            disabled={verifyingAdminReset}
+                            onClick={() => handleAdminUnlockSubmit("return_admin")}
+                        >
+                            {verifyingAdminReset ? "Verifying…" : "🔙 Exit to Admin Panel"}
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-outline"
+                            style={{ width: "100%", justifyContent: "center" }}
+                            onClick={() => setShowAdminResetModal(false)}
+                            disabled={verifyingAdminReset}
+                        >
+                            Cancel & Stay on Kiosk
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    ) : null;
+
+    const kioskVirtualCursorNode = isPointerLocked ? (
+        <div
+            ref={virtualCursorRef}
+            style={{
+                position: "fixed",
+                top: 0,
+                left: 0,
+                zIndex: 2147483647,
+                pointerEvents: "none",
+                transform: `translate3d(${virtualPosRef.current.x}px, ${virtualPosRef.current.y}px, 0)`,
+                willChange: "transform",
+            }}
+        >
+            <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                style={{
+                    filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.65))",
+                    transform: isVirtualCursorInteractive ? "scale(1.1)" : "scale(1)",
+                    transition: "transform 0.08s ease",
+                }}
+            >
+                <path
+                    d="M3 2L10.5 21L13.5 13.5L21 10.5L3 2Z"
+                    fill={isVirtualCursorInteractive ? "#ff6b35" : "#ffffff"}
+                    stroke="#0b0d14"
+                    strokeWidth="1.8"
+                    strokeLinejoin="round"
+                />
+            </svg>
+        </div>
+    ) : null;
+
     // ─── 1. GOODBYE & SESSION EXPIRED SCREEN (Requirement 10) ──────────────────
     if (goodbyeScreen) {
         return (
             <div
                 style={{
-                    minHeight: "100vh",
+                    minHeight: "100dvh",
                     background: "radial-gradient(circle at center, rgba(35,209,139,0.25) 0%, #0b0d17 70%)",
                     display: "flex",
                     alignItems: "center",
@@ -1796,6 +2435,9 @@ export default function TableKiosk() {
                     padding: 24,
                 }}
             >
+                {kioskLockOverlay}
+                {adminResetModalNode}
+                {kioskVirtualCursorNode}
                 <div
                     className="card"
                     style={{
@@ -1912,7 +2554,10 @@ export default function TableKiosk() {
                                         <button
                                             key={t.id}
                                             className="btn btn-primary"
-                                            onClick={() => setSelectedTableId(t.id)}
+                                            onClick={() => {
+                                                enterKioskFullscreen();
+                                                setSelectedTableId(t.id);
+                                            }}
                                         >
                                             🪑 Table T{t.table_number}
                                         </button>
@@ -1926,7 +2571,7 @@ export default function TableKiosk() {
         );
     }
 
-    if (loading) {
+    if (loading && !sessionData) {
         return (
             <div className="login-wrap">
                 <div className="card" style={{ textAlign: "center", padding: 40 }}>
@@ -2029,342 +2674,170 @@ export default function TableKiosk() {
 
     // ─── 3. 3D RESTAURANT WELCOME & ADVERTISING LANDING SCREEN (NEW CUSTOMER SESSION) ───
     if (!isCheckedInForThisSession && !goodbyeScreen) {
-        const showcaseDishes = [
-            ...menuItems.filter((m) => m.is_bestseller),
-            ...menuItems.filter((m) => !m.is_bestseller),
-        ].slice(0, 4);
-
+        const nameEntered = welcomeName.trim().length > 0;
         return (
             <div
                 style={{
-                    minHeight: "100vh",
-                    width: "100vw",
+                    minHeight: "100dvh",
+                    maxHeight: "100dvh",
+                    width: "100%",
                     overflowY: "auto",
+                    WebkitOverflowScrolling: "touch",
                     background:
-                        "radial-gradient(circle at 18% 20%, rgba(255,107,53,0.22) 0%, transparent 45%), radial-gradient(circle at 82% 80%, rgba(84,160,255,0.18) 0%, transparent 45%), linear-gradient(135deg, #070810 0%, #121528 50%, #090b14 100%)",
+                        "radial-gradient(circle at 50% 0%, rgba(255,107,53,0.18) 0%, transparent 55%), linear-gradient(180deg, #0d0f1a 0%, #090b14 100%)",
                     display: "flex",
+                    flexDirection: "column",
                     alignItems: "center",
                     justifyContent: "center",
-                    padding: "28px 20px",
-                    perspective: "1200px",
+                    padding: "clamp(16px, 3vw, 32px)",
+                    boxSizing: "border-box",
+                    position: "relative",
                 }}
             >
-                <div
+                {kioskLockOverlay}
+                {adminResetModalNode}
+                {kioskVirtualCursorNode}
+                <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
                     style={{
-                        maxWidth: 1120,
-                        width: "100%",
-                        display: "grid",
-                        gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
-                        gap: 28,
-                        alignItems: "stretch",
+                        position: "absolute",
+                        top: 16,
+                        right: 16,
+                        opacity: 0.45,
+                        fontSize: "0.8rem",
+                        padding: "6px 10px",
+                    }}
+                    title="Admin Kiosk Settings"
+                    onClick={() => {
+                        setAdminResetError("");
+                        setAdminPasswordInput("");
+                        setShowAdminResetModal(true);
                     }}
                 >
-                    {/* LEFT: 3D RESTAURANT ADVERTISING & SIGNATURE SHOWCASE CARD */}
+                    ⚙️
+                </button>
+                {/* Top: restaurant + table */}
+                <div style={{ textAlign: "center", marginBottom: "clamp(18px, 3vh, 28px)", maxWidth: 640, width: "100%" }}>
                     <div
                         style={{
-                            background: "linear-gradient(155deg, rgba(30,35,62,0.92) 0%, rgba(16,19,36,0.96) 100%)",
-                            borderRadius: 24,
-                            padding: "32px 28px",
-                            border: "1px solid rgba(255,255,255,0.12)",
-                            boxShadow:
-                                "0 25px 60px rgba(0,0,0,0.65), 0 0 40px rgba(255,107,53,0.18), inset 0 1px 0 rgba(255,255,255,0.18)",
-                            transform: "rotateY(2deg) translateZ(12px)",
-                            display: "flex",
-                            flexDirection: "column",
-                            justifyContent: "space-between",
-                            position: "relative",
-                            overflow: "hidden",
+                            display: "inline-block",
+                            background: "rgba(35,209,139,0.14)",
+                            border: "1px solid var(--green)",
+                            color: "var(--green)",
+                            padding: "6px 18px",
+                            borderRadius: 999,
+                            fontWeight: 800,
+                            fontSize: "clamp(0.88rem, 1.8vw, 1rem)",
+                            marginBottom: 12,
                         }}
                     >
-                        <div>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 18 }}>
-                                <span
-                                    style={{
-                                        background: "linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)",
-                                        color: "#fff",
-                                        padding: "6px 14px",
-                                        borderRadius: 999,
-                                        fontWeight: 800,
-                                        fontSize: "0.8rem",
-                                        letterSpacing: "0.04em",
-                                        boxShadow: "0 6px 18px rgba(255,107,53,0.4)",
-                                    }}
-                                >
-                                    ✨ SMART AI DINING EXPERIENCE
-                                </span>
-                                <span
-                                    style={{
-                                        background: "rgba(35,209,139,0.16)",
-                                        border: "1px solid var(--green)",
-                                        color: "var(--green)",
-                                        padding: "6px 14px",
-                                        borderRadius: 999,
-                                        fontWeight: 900,
-                                        fontSize: "0.9rem",
-                                    }}
-                                >
-                                    🪑 Table T{sessionData.table.table_number}
-                                </span>
-                            </div>
+                        Table {sessionData.table.table_number}
+                    </div>
+                    <h1 style={{ fontSize: "clamp(1.75rem, 4vw, 2.5rem)", fontWeight: 900, color: "#fff", margin: 0, lineHeight: 1.15 }}>
+                        Welcome to {sessionData.restaurant.name}
+                    </h1>
+                    <p style={{ color: "var(--text-muted)", fontSize: "clamp(0.95rem, 2vw, 1.1rem)", marginTop: 8 }}>
+                        Please enter your name to start ordering
+                    </p>
+                </div>
 
-                            <h1
-                                style={{
-                                    fontSize: "2.4rem",
-                                    fontWeight: 900,
-                                    lineHeight: 1.15,
-                                    marginBottom: 8,
-                                    background: "linear-gradient(90deg, #ffffff 0%, #ffd166 55%, #ff6b35 100%)",
-                                    WebkitBackgroundClip: "text",
-                                    WebkitTextFillColor: "transparent",
-                                }}
-                            >
-                                {sessionData.restaurant.name}
-                            </h1>
-                            <div style={{ color: "var(--text-muted)", fontSize: "0.95rem", marginBottom: 20 }}>
-                                📍 {sessionData.branch.name}
-                                {sessionData.branch.address ? ` · ${sessionData.branch.address}` : ""}
-                                {sessionData.branch.city ? `, ${sessionData.branch.city}` : ""}
-                            </div>
+                <form
+                    onSubmit={handleCustomerCheckinSubmit}
+                    style={{ width: "100%", maxWidth: 560, display: "flex", flexDirection: "column", gap: "clamp(14px, 2.2vh, 18px)" }}
+                >
+                    {/* Name input — highlighted & mandatory */}
+                    <input
+                        className="input"
+                        style={{
+                            width: "100%",
+                            boxSizing: "border-box",
+                            padding: "clamp(16px, 2.5vh, 22px) 22px",
+                            fontSize: "clamp(1.25rem, 3vw, 1.6rem)",
+                            fontWeight: 800,
+                            textAlign: "center",
+                            color: "#ffd166",
+                            borderRadius: 18,
+                            background: "rgba(255,255,255,0.06)",
+                            border: `2px solid ${nameEntered ? "#ff6b35" : "rgba(255,107,53,0.55)"}`,
+                            boxShadow: nameEntered
+                                ? "0 0 0 5px rgba(255,107,53,0.18), 0 10px 30px rgba(0,0,0,0.4)"
+                                : "0 0 0 4px rgba(255,107,53,0.08)",
+                            outline: "none",
+                            transition: "all 0.2s",
+                        }}
+                        placeholder="Enter Your Name *"
+                        value={welcomeName}
+                        onChange={(e) => setWelcomeName(e.target.value)}
+                        required
+                        autoFocus
+                        autoComplete="off"
+                    />
 
-                            {/* 3D Chef Bestseller Cards */}
-                            <div style={{ marginBottom: 20 }}>
-                                <div
-                                    style={{
-                                        fontSize: "0.78rem",
-                                        fontWeight: 800,
-                                        textTransform: "uppercase",
-                                        letterSpacing: "0.08em",
-                                        color: "#ffd166",
-                                        marginBottom: 12,
-                                    }}
-                                >
-                                    🌟 Chef's Signature Highlights Today
-                                </div>
-                                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
-                                    {showcaseDishes.map((dish) => (
-                                        <div
-                                            key={dish.id}
-                                            style={{
-                                                background: "rgba(255,255,255,0.04)",
-                                                borderRadius: 14,
-                                                overflow: "hidden",
-                                                border: "1px solid rgba(255,255,255,0.08)",
-                                                display: "flex",
-                                                alignItems: "center",
-                                                gap: 10,
-                                                padding: 8,
-                                                boxShadow: "0 8px 20px rgba(0,0,0,0.35)",
-                                            }}
-                                        >
-                                            <img
-                                                src={dish.image_url || getFoodImage(dish.name, dish.is_veg)}
-                                                alt={dish.name}
-                                                style={{
-                                                    width: 54,
-                                                    height: 54,
-                                                    borderRadius: 10,
-                                                    objectFit: "cover",
-                                                    flexShrink: 0,
-                                                }}
-                                            />
-                                            <div style={{ minWidth: 0 }}>
-                                                <div
-                                                    style={{
-                                                        fontWeight: 800,
-                                                        fontSize: "0.84rem",
-                                                        color: "#fff",
-                                                        whiteSpace: "nowrap",
-                                                        overflow: "hidden",
-                                                        textOverflow: "ellipsis",
-                                                    }}
-                                                >
-                                                    {dish.name}
-                                                </div>
-                                                <div style={{ color: "#ffd166", fontWeight: 800, fontSize: "0.8rem" }}>
-                                                    ₹{dish.base_price}
-                                                </div>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Feature Badges Footer */}
-                        <div
+                    {/* Birthday tick (optional) */}
+                    <button
+                        type="button"
+                        onClick={() => setWelcomeIsBirthday(!welcomeIsBirthday)}
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 16,
+                            width: "100%",
+                            padding: "clamp(14px, 2vh, 16px) 20px",
+                            borderRadius: 16,
+                            cursor: "pointer",
+                            background: welcomeIsBirthday ? "rgba(255,107,53,0.14)" : "rgba(255,255,255,0.04)",
+                            border: `2px solid ${welcomeIsBirthday ? "#ff6b35" : "rgba(255,255,255,0.14)"}`,
+                            color: "#fff",
+                            fontSize: "clamp(1rem, 2.2vw, 1.2rem)",
+                            fontWeight: 700,
+                            textAlign: "left",
+                            transition: "all 0.2s",
+                        }}
+                    >
+                        <span
                             style={{
-                                display: "grid",
-                                gridTemplateColumns: "repeat(3, 1fr)",
-                                gap: 10,
-                                paddingTop: 16,
-                                borderTop: "1px solid rgba(255,255,255,0.08)",
+                                width: 34,
+                                height: 34,
+                                flexShrink: 0,
+                                borderRadius: 10,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                fontSize: "1.3rem",
+                                fontWeight: 900,
+                                background: welcomeIsBirthday ? "#ff6b35" : "transparent",
+                                border: `2px solid ${welcomeIsBirthday ? "#ff6b35" : "rgba(255,255,255,0.4)"}`,
+                                color: "#fff",
                             }}
                         >
-                            <div style={{ background: "rgba(0,0,0,0.28)", padding: "10px 12px", borderRadius: 12, textAlign: "center" }}>
-                                <div style={{ fontSize: "1.3rem" }}>🤖🎤</div>
-                                <div style={{ fontSize: "0.75rem", fontWeight: 700, marginTop: 4 }}>AI Voice Waiter</div>
-                            </div>
-                            <div style={{ background: "rgba(0,0,0,0.28)", padding: "10px 12px", borderRadius: 12, textAlign: "center" }}>
-                                <div style={{ fontSize: "1.3rem" }}>🎂🎵</div>
-                                <div style={{ fontSize: "0.75rem", fontWeight: 700, marginTop: 4 }}>Birthday Music</div>
-                            </div>
-                            <div style={{ background: "rgba(0,0,0,0.28)", padding: "10px 12px", borderRadius: 12, textAlign: "center" }}>
-                                <div style={{ fontSize: "1.3rem" }}>📱🧾</div>
-                                <div style={{ fontSize: "0.75rem", fontWeight: 700, marginTop: 4 }}>Instant GST Bill</div>
-                            </div>
-                        </div>
-                    </div>
+                            {welcomeIsBirthday ? "✓" : ""}
+                        </span>
+                        <span>🎂 It's my birthday today (Optional)</span>
+                    </button>
 
-                    {/* RIGHT: 3D CUSTOMER CHECK-IN & BIRTHDAY CELEBRATION CARD */}
-                    <div
+                    {/* Primary CTA */}
+                    <button
+                        type="submit"
+                        className="btn"
+                        disabled={checkingIn || !nameEntered}
                         style={{
-                            background: "linear-gradient(155deg, rgba(25,29,52,0.95) 0%, rgba(14,16,30,0.98) 100%)",
-                            borderRadius: 24,
-                            padding: "32px 28px",
-                            border: "1px solid rgba(255,107,53,0.35)",
-                            boxShadow:
-                                "0 25px 60px rgba(0,0,0,0.65), 0 0 35px rgba(255,107,53,0.15), inset 0 1px 0 rgba(255,255,255,0.15)",
-                            transform: "rotateY(-2deg) translateZ(12px)",
-                            display: "flex",
-                            flexDirection: "column",
+                            width: "100%",
+                            padding: "clamp(16px, 2.4vh, 22px)",
+                            fontSize: "clamp(1.15rem, 2.5vw, 1.4rem)",
+                            fontWeight: 900,
+                            borderRadius: 18,
                             justifyContent: "center",
+                            background: "linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)",
+                            color: "#fff",
+                            opacity: nameEntered ? 1 : 0.5,
+                            boxShadow: nameEntered ? "0 12px 30px rgba(255,107,53,0.45)" : "none",
+                            transition: "all 0.2s",
                         }}
                     >
-                        <div style={{ textAlign: "center", marginBottom: 22 }}>
-                            <div style={{ fontSize: "2.8rem", marginBottom: 6 }}>🍽️✨</div>
-                            <h2 style={{ fontSize: "1.65rem", fontWeight: 900, color: "#fff", marginBottom: 6 }}>
-                                Welcome to Table T{sessionData.table.table_number}!
-                            </h2>
-                            <p className="text-muted text-sm">
-                                Enter your name to start your personalized dining session & receive your GST Invoice in your name.
-                            </p>
-                        </div>
-
-                        <form onSubmit={handleCustomerCheckinSubmit}>
-                            <div className="input-group" style={{ marginBottom: 18 }}>
-                                <label className="input-label" style={{ fontSize: "0.85rem", color: "#fff" }}>
-                                    👤 Your Name <span style={{ color: "var(--orange)" }}>*</span>
-                                </label>
-                                <input
-                                    className="input"
-                                    style={{
-                                        padding: "14px 16px",
-                                        fontSize: "1.05rem",
-                                        borderRadius: 12,
-                                        background: "rgba(0,0,0,0.35)",
-                                        border: "1px solid rgba(255,255,255,0.18)",
-                                    }}
-                                    placeholder="e.g. Rahul Sharma"
-                                    value={welcomeName}
-                                    onChange={(e) => setWelcomeName(e.target.value)}
-                                    required
-                                    autoFocus
-                                />
-                            </div>
-
-                            <div
-                                style={{
-                                    background: "rgba(255,159,67,0.08)",
-                                    border: "1px solid rgba(255,159,67,0.3)",
-                                    borderRadius: 14,
-                                    padding: "14px 16px",
-                                    marginBottom: 22,
-                                }}
-                            >
-                                <label className="input-label" style={{ fontSize: "0.82rem", color: "#ffd166", marginBottom: 8, display: "block" }}>
-                                    🎂 Date of Birth (Optional — Special Birthday Celebration!)
-                                </label>
-                                <input
-                                    type="date"
-                                    className="input"
-                                    style={{
-                                        padding: "10px 14px",
-                                        borderRadius: 10,
-                                        background: "rgba(0,0,0,0.35)",
-                                        marginBottom: 10,
-                                    }}
-                                    value={welcomeDob}
-                                    onChange={(e) => {
-                                        const val = e.target.value;
-                                        setWelcomeDob(val);
-                                        if (val) {
-                                            const parts = val.split("-");
-                                            const now = new Date();
-                                            if (
-                                                parts.length === 3 &&
-                                                parseInt(parts[1], 10) === now.getMonth() + 1 &&
-                                                parseInt(parts[2], 10) === now.getDate()
-                                            ) {
-                                                setWelcomeIsBirthday(true);
-                                            }
-                                        }
-                                    }}
-                                />
-                                <label
-                                    style={{
-                                        display: "flex",
-                                        alignItems: "center",
-                                        gap: 8,
-                                        cursor: "pointer",
-                                        fontSize: "0.85rem",
-                                        color: "#fff",
-                                        userSelect: "none",
-                                    }}
-                                >
-                                    <input
-                                        type="checkbox"
-                                        checked={welcomeIsBirthday}
-                                        onChange={(e) => setWelcomeIsBirthday(e.target.checked)}
-                                        style={{ width: 17, height: 17, accentColor: "#ff6b35" }}
-                                    />
-                                    <span>🎉 Today is my Birthday! (Celebrate with Birthday Song 🎵)</span>
-                                </label>
-                            </div>
-
-                            <button
-                                type="submit"
-                                className="btn"
-                                disabled={checkingIn}
-                                style={{
-                                    width: "100%",
-                                    padding: "15px 20px",
-                                    fontSize: "1.1rem",
-                                    fontWeight: 900,
-                                    borderRadius: 14,
-                                    justifyContent: "center",
-                                    background: "linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)",
-                                    color: "#fff",
-                                    boxShadow: "0 10px 25px rgba(255,107,53,0.4)",
-                                }}
-                            >
-                                {checkingIn ? "Starting Your Table Session…" : "🚀 Start Ordering Menu & AI Waiter"}
-                            </button>
-
-                            <button
-                                type="button"
-                                className="btn btn-outline"
-                                style={{
-                                    width: "100%",
-                                    padding: "12px",
-                                    borderRadius: 12,
-                                    marginTop: 10,
-                                    justifyContent: "center",
-                                    border: "1px solid rgba(255,255,255,0.2)",
-                                    color: "var(--text-muted)",
-                                    fontSize: "0.95rem",
-                                }}
-                                onClick={() => {
-                                    const sessId = sessionData?.session?.id;
-                                    if (!sessId) return;
-                                    sessionStorage.setItem("hd_kiosk_checkedin_session", sessId);
-                                    setCheckedInSessionId(sessId);
-                                }}
-                            >
-                                ⏭️ Skip & Browse Menu Directly
-                            </button>
-                        </form>
-                    </div>
-                </div>
+                        {checkingIn ? "Starting…" : "View Menu & Order  →"}
+                    </button>
+                </form>
             </div>
         );
     }
@@ -2407,8 +2880,8 @@ export default function TableKiosk() {
             style={{
                 display: "flex",
                 flexDirection: "column",
-                height: "100vh",
-                width: "100vw",
+                height: "100dvh",
+                width: "100%",
                 overflow: "hidden",
                 background: "#0b0d14",
                 position: "relative",
@@ -2515,7 +2988,7 @@ export default function TableKiosk() {
                     minWidth: 0,
                     display: "flex",
                     flexDirection: "column",
-                    height: "100vh",
+                    height: "100dvh",
                     overflow: "hidden",
                 }}
             >
@@ -2579,6 +3052,17 @@ export default function TableKiosk() {
                         >
                             🎂 Birthday
                         </button>
+                        {activeOrders.length === 0 && (
+                            <button
+                                type="button"
+                                className="btn btn-outline btn-sm"
+                                style={{ borderColor: "#23d18b", color: "#23d18b", fontWeight: 700 }}
+                                onClick={() => startOrResumeSession(activeToken, selectedTableId, true)}
+                                title="Start fresh session for a new customer"
+                            >
+                                🔄 New Guest
+                            </button>
+                        )}
                         {activeOrders.length > 0 && (
                             <button
                                 className="btn btn-success btn-sm"
@@ -2588,28 +3072,33 @@ export default function TableKiosk() {
                                 🧾 GST Bill & QR Pay (₹{ordersGrandTotal.toFixed(2)})
                             </button>
                         )}
-                        {/* Language Selector */}
-                        <select
-                            className="input"
+                        {/* Language Selector (button cycle for full pointer-lock compatibility) */}
+                        <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
                             style={{
-                                width: "auto",
-                                padding: "6px 10px",
+                                padding: "6px 12px",
                                 fontSize: "0.78rem",
                                 borderRadius: 10,
                                 background: "#1c2035",
                                 borderColor: "var(--border)",
                                 color: "#fff",
-                                cursor: "pointer",
                             }}
-                            value={kioskLanguage}
-                            onChange={(e) => setKioskLanguage(e.target.value as any)}
-                            title="Select AI Voice Language"
+                            onClick={() => {
+                                const order: Array<"auto" | "en" | "hi" | "or"> = ["auto", "en", "hi", "or"];
+                                const next = order[(order.indexOf(kioskLanguage) + 1) % order.length];
+                                setKioskLanguage(next);
+                            }}
+                            title="Tap to change AI Voice Language"
                         >
-                            <option value="auto">🌐 Auto Lang</option>
-                            <option value="en">🇬🇧 English</option>
-                            <option value="hi">🇮🇳 हिन्दी</option>
-                            <option value="or">🇮🇳 ଓଡ଼ିଆ</option>
-                        </select>
+                            {kioskLanguage === "auto"
+                                ? "🌐 Auto Lang"
+                                : kioskLanguage === "en"
+                                ? "🇬🇧 English"
+                                : kioskLanguage === "hi"
+                                ? "🇮🇳 हिन्दी"
+                                : "🇮🇳 ଓଡ଼ିଆ"}
+                        </button>
                         <button
                             type="button"
                             className={`btn btn-sm ${voiceEnabled ? "btn-primary" : "btn-outline"}`}
@@ -3882,6 +4371,17 @@ export default function TableKiosk() {
                             </button>
                         )}
 
+                        {activeOrders.length === 0 && (
+                            <button
+                                type="button"
+                                className="btn btn-outline btn-sm"
+                                style={{ borderColor: "#23d18b", color: "#23d18b", fontWeight: 700 }}
+                                onClick={() => startOrResumeSession(activeToken, selectedTableId, true)}
+                                title="Start fresh session for a new customer"
+                            >
+                                🔄 New Guest
+                            </button>
+                        )}
                         {activeOrders.length > 0 && (
                             <button
                                 type="button"
@@ -4765,112 +5265,64 @@ export default function TableKiosk() {
                 </div>
             )}
 
-            {/* ═══════════════════════════════════════════════════════════════════════
-                MODAL: ADMIN TABLET UNBIND / RESET CONFIRMATION (PIN/PASSWORD PROTECTED)
-               ═══════════════════════════════════════════════════════════════════════ */}
-            {showAdminResetModal && (
-                <div className="modal-overlay" onClick={() => setShowAdminResetModal(false)}>
-                    <div className="card modal" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
-                        <div className="flex justify-between items-center" style={{ marginBottom: 12 }}>
-                            <h2 style={{ margin: 0, fontSize: "1.2rem", display: "flex", alignItems: "center", gap: 8 }}>
-                                ⚙️ Admin Kiosk Settings
-                            </h2>
+            {inactivityCountdown !== null && (
+                <div className="modal-overlay" style={{ zIndex: 100040 }}>
+                    <div
+                        className="card modal"
+                        style={{
+                            maxWidth: 460,
+                            textAlign: "center",
+                            border: "2px solid #ff9f43",
+                            padding: "28px 24px",
+                        }}
+                    >
+                        <div style={{ fontSize: "2.8rem", marginBottom: 8 }}>🕒</div>
+                        <h2 style={{ fontSize: "1.4rem", fontWeight: 900, color: "#fff", marginBottom: 8 }}>
+                            Are you still ordering?
+                        </h2>
+                        <p className="text-muted text-sm" style={{ marginBottom: 20, lineHeight: 1.5 }}>
+                            No order has been placed yet. Refreshing this table for the next customer in{" "}
+                            <strong style={{ color: "#ff9f43", fontSize: "1rem" }}>{inactivityCountdown}s</strong>…
+                        </p>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                             <button
                                 type="button"
-                                className="btn btn-outline btn-sm"
-                                onClick={() => setShowAdminResetModal(false)}
+                                className="btn"
+                                style={{
+                                    width: "100%",
+                                    justifyContent: "center",
+                                    padding: "14px 18px",
+                                    fontSize: "1.05rem",
+                                    fontWeight: 900,
+                                    borderRadius: 12,
+                                    background: "linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)",
+                                    color: "#fff",
+                                }}
+                                onClick={() => {
+                                    lastInteractionAtRef.current = Date.now();
+                                    setInactivityCountdown(null);
+                                }}
                             >
-                                ✕
+                                👋 Yes, I'm Still Here
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-outline"
+                                style={{ width: "100%", justifyContent: "center", padding: "12px 16px" }}
+                                onClick={() => {
+                                    setInactivityCountdown(null);
+                                    startOrResumeSession(activeToken, selectedTableId, true);
+                                }}
+                            >
+                                🔄 New Guest / Start Over Now
                             </button>
                         </div>
-
-                        <p className="text-muted text-sm" style={{ marginBottom: 16 }}>
-                            This tablet is bound to <strong>Table T{sessionData?.table?.table_number}</strong> at{" "}
-                            <strong>{sessionData?.restaurant?.name}</strong>.
-                        </p>
-
-                        <div style={{ background: "rgba(255,95,87,0.1)", border: "1px solid var(--red)", borderRadius: 10, padding: 14, marginBottom: 16 }}>
-                            <div style={{ fontWeight: 700, color: "var(--red)", fontSize: "0.85rem", marginBottom: 4 }}>
-                                🔒 Hardware Reset Protection
-                            </div>
-                            <div className="text-muted" style={{ fontSize: "0.78rem" }}>
-                                To prevent guests from unbinding this tablet, enter your Restaurant Admin password or Master PIN (<strong>1234</strong>) to unbind.
-                            </div>
-                        </div>
-
-                        {adminResetError && (
-                            <div style={{ color: "var(--red)", fontSize: "0.82rem", marginBottom: 12 }}>
-                                ⚠️ {adminResetError}
-                            </div>
-                        )}
-
-                        <form
-                            onSubmit={async (e) => {
-                                e.preventDefault();
-                                setAdminResetError("");
-                                const val = adminPasswordInput.trim();
-                                if (!val) {
-                                    setAdminResetError("Please enter admin password or PIN.");
-                                    return;
-                                }
-
-                                setVerifyingAdminReset(true);
-                                // Master PIN bypass or verified against backend /login
-                                if (val === "1234" || val === "admin123") {
-                                    localStorage.removeItem("hd_kiosk_token");
-                                    localStorage.removeItem("hd_kiosk_table_id");
-                                    sessionStorage.removeItem("hd_kiosk_checkedin_session");
-                                    window.location.href = "/kiosk";
-                                    return;
-                                }
-
-                                try {
-                                    const staffInfo = JSON.parse(localStorage.getItem("hd_staff") || "{}");
-                                    const emailToTest = staffInfo.email;
-                                    if (emailToTest) {
-                                        await api.post("/auth/login", { email: emailToTest, password: val });
-                                    }
-                                    localStorage.removeItem("hd_kiosk_token");
-                                    localStorage.removeItem("hd_kiosk_table_id");
-                                    sessionStorage.removeItem("hd_kiosk_checkedin_session");
-                                    window.location.href = "/kiosk";
-                                } catch {
-                                    setAdminResetError("Incorrect admin password or PIN. Unbind denied.");
-                                    setVerifyingAdminReset(false);
-                                }
-                            }}
-                        >
-                            <input
-                                type="password"
-                                className="input"
-                                style={{ width: "100%", marginBottom: 14 }}
-                                placeholder="Enter Admin Password or PIN (e.g. 1234)"
-                                value={adminPasswordInput}
-                                onChange={(e) => setAdminPasswordInput(e.target.value)}
-                                autoFocus
-                            />
-
-                            <div className="flex gap-2 justify-end">
-                                <button
-                                    type="button"
-                                    className="btn btn-outline"
-                                    onClick={() => setShowAdminResetModal(false)}
-                                    disabled={verifyingAdminReset}
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="submit"
-                                    className="btn btn-danger"
-                                    disabled={verifyingAdminReset}
-                                >
-                                    {verifyingAdminReset ? "Verifying…" : "🔓 Unbind Tablet Device"}
-                                </button>
-                            </div>
-                        </form>
                     </div>
                 </div>
             )}
+            {kioskLockOverlay}
+            {adminResetModalNode}
+            {kioskVirtualCursorNode}
         </div>
     );
 }

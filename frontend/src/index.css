@@ -60,15 +60,19 @@ body {
 
 .sidebar {
   width: 240px;
-  height: 100vh;
-  max-height: 100vh;
+  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
   overflow-y: auto;
   overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   background: var(--bg-card);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 20px 16px;
+  padding: 16px 14px calc(18px + env(safe-area-inset-bottom, 0px));
   gap: 6px;
   position: fixed;
   left: 0;
@@ -78,9 +82,32 @@ body {
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+.sidebar-nav {
+  flex: 1 1 auto;
+  min-height: 80px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.sidebar-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .main-content {
   margin-left: 240px;
   flex: 1;
+  min-width: 0;
   padding: 28px;
   transition: margin 0.3s ease;
 }
@@ -130,6 +157,7 @@ body {
 
   .main-content {
     margin-left: 0;
+    width: 100%;
     padding: 20px;
   }
 
@@ -139,6 +167,20 @@ body {
 
   .mobile-header {
     display: flex;
+  }
+
+  .kanban-wrapper {
+    height: calc(100vh - 140px);
+    height: calc(100dvh - 140px);
+  }
+
+  .kanban {
+    display: grid;
+    grid-template-columns: none !important;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(250px, 1fr);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 }
 
@@ -350,6 +392,7 @@ body {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 120px);
+  height: calc(100dvh - 120px);
   overflow: hidden;
 }
 

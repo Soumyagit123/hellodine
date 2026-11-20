@@ -73,6 +73,35 @@ function Sidebar({ isOpen, hideSidebar, openPasswordModal }: { isOpen: boolean; 
         navigate("/login");
     }
 
+    function openKioskFullscreen() {
+        hideSidebar();
+        try {
+            const docEl = document.documentElement as any;
+            const requestLock = () => {
+                try {
+                    docEl.requestPointerLock?.();
+                } catch { }
+            };
+            if (!document.fullscreenElement && !(document as any).webkitFullscreenElement) {
+                if (docEl.requestFullscreen) {
+                    Promise.resolve(docEl.requestFullscreen({ navigationUI: "hide" }))
+                        .then(requestLock)
+                        .catch(() => { });
+                } else if (docEl.webkitRequestFullscreen) {
+                    docEl.webkitRequestFullscreen();
+                    requestLock();
+                } else if (docEl.msRequestFullscreen) {
+                    docEl.msRequestFullscreen();
+                }
+            } else {
+                requestLock();
+            }
+        } catch {
+            // ignore fullscreen restrictions
+        }
+        navigate("/kiosk");
+    }
+
     return (
         <aside className={`sidebar ${isOpen ? "open" : ""}`}>
             <div className="logo" style={{ flexDirection: "column", alignItems: "flex-start", height: "auto", padding: "8px 14px 12px", marginBottom: "10px", flexShrink: 0 }}>
@@ -87,65 +116,67 @@ function Sidebar({ isOpen, hideSidebar, openPasswordModal }: { isOpen: boolean; 
                 )}
             </div>
 
-            <div style={{ padding: "0 14px", marginBottom: "12px", flexShrink: 0 }}>
+            <div style={{ padding: "0 14px", marginBottom: "8px", flexShrink: 0 }}>
                 <div style={{ fontSize: "0.85rem", fontWeight: 700 }}>{staff.name}</div>
                 <div style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>{staff.role}</div>
             </div>
 
-            {role === "SUPER_ADMIN" && <BranchSelector />}
+            <div className="sidebar-nav">
+                {role === "SUPER_ADMIN" && <BranchSelector />}
 
-            {role !== "SYSTEM_ADMIN" && (
-                <NavLink to="/orders" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>
-                    🍽️ Orders
-                </NavLink>
-            )}
+                {role !== "SYSTEM_ADMIN" && (
+                    <NavLink to="/orders" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>
+                        🍽️ Orders
+                    </NavLink>
+                )}
 
-            {(role === "SUPER_ADMIN" || role === "BRANCH_ADMIN") && (
-                <a href="/kiosk" target="_blank" rel="noopener noreferrer" className="nav-link" onClick={hideSidebar} style={{ flexShrink: 0 }}>
-                    📱 Table Kiosk UI
-                </a>
-            )}
+                {(role === "SUPER_ADMIN" || role === "BRANCH_ADMIN") && (
+                    <button type="button" className="nav-link" onClick={openKioskFullscreen} style={{ flexShrink: 0, textAlign: "left" }}>
+                        📱 Table Kiosk UI
+                    </button>
+                )}
 
 
-            {(role === "CASHIER" || role === "BRANCH_ADMIN" || role === "SUPER_ADMIN") && (
-                <NavLink to="/billing" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>
-                    💰 Billing
-                </NavLink>
-            )}
+                {(role === "CASHIER" || role === "BRANCH_ADMIN" || role === "SUPER_ADMIN") && (
+                    <NavLink to="/billing" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>
+                        💰 Billing
+                    </NavLink>
+                )}
 
-            {(role === "BRANCH_ADMIN" || role === "SUPER_ADMIN") && (
-                <>
-                    <div style={{ margin: "12px 0 4px", fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", padding: "0 14px", flexShrink: 0 }}>
-                        Admin
-                    </div>
-                    <NavLink to="/admin/menu" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>📋 Menu</NavLink>
-                    <NavLink to="/admin/tables" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>🪑 Tables</NavLink>
-                    <NavLink to="/admin/staff" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>👤 Staff</NavLink>
-                    <NavLink to="/admin/report" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>📊 Daily Report</NavLink>
-                    {role === "SUPER_ADMIN" && (
-                        <NavLink to="/admin/branches" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>🏘️ Branches</NavLink>
-                    )}
-                </>
-            )}
+                {(role === "BRANCH_ADMIN" || role === "SUPER_ADMIN") && (
+                    <>
+                        <div style={{ margin: "12px 0 4px", fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", padding: "0 14px", flexShrink: 0 }}>
+                            Admin
+                        </div>
+                        <NavLink to="/admin/menu" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>📋 Menu</NavLink>
+                        <NavLink to="/admin/tables" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>🪑 Tables</NavLink>
+                        <NavLink to="/admin/staff" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>👤 Staff</NavLink>
+                        <NavLink to="/admin/report" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>📊 Daily Report</NavLink>
+                        {role === "SUPER_ADMIN" && (
+                            <NavLink to="/admin/branches" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>🏘️ Branches</NavLink>
+                        )}
+                    </>
+                )}
 
-            {role === "SYSTEM_ADMIN" && (
-                <>
-                    <div style={{ margin: "12px 0 4px", fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--accent)", padding: "0 14px", flexShrink: 0 }}>
-                        Provider
-                    </div>
-                    <NavLink to="/system" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>🌐 System Dashboard</NavLink>
-                </>
-            )}
+                {role === "SYSTEM_ADMIN" && (
+                    <>
+                        <div style={{ margin: "12px 0 4px", fontSize: "0.72rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--accent)", padding: "0 14px", flexShrink: 0 }}>
+                            Provider
+                        </div>
+                        <NavLink to="/system" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`} onClick={hideSidebar} style={{ flexShrink: 0 }}>🌐 System Dashboard</NavLink>
+                    </>
+                )}
+            </div>
 
-            <div style={{ flex: 1, minHeight: "12px" }} />
+            <div className="sidebar-footer">
+                <button className="nav-link" onClick={() => { hideSidebar(); openPasswordModal(); }} style={{ color: "var(--orange)", flexShrink: 0 }}>
+                    🔐 Change Password
+                </button>
 
-            <button className="nav-link" onClick={() => { hideSidebar(); openPasswordModal(); }} style={{ color: "var(--orange)", flexShrink: 0 }}>
-                🔐 Change Password
-            </button>
-
-            <button className="nav-link" onClick={logout} style={{ color: "var(--red)", flexShrink: 0 }}>
-                🚪 Logout
-            </button>
+                <button className="nav-link" onClick={logout} style={{ color: "var(--red)", flexShrink: 0 }}>
+                    🚪 Logout
+                </button>
+            </div>
         </aside>
     );
 }

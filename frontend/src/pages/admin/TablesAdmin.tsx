@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import api, { getClientCached, isClientCacheFresh } from "../../api/client";
 import { QRCodeCanvas } from "qrcode.react";
 import { useBranch } from "../../context/BranchContext";
 
 export default function TablesAdmin() {
+    const navigate = useNavigate();
     const { selectedBranchId } = useBranch();
     const initialStaff = (() => {
         try {
@@ -151,6 +153,34 @@ export default function TablesAdmin() {
         }
     }
 
+    function launchKioskFullscreen(path: string) {
+        try {
+            const docEl = document.documentElement as any;
+            const requestLock = () => {
+                try {
+                    docEl.requestPointerLock?.();
+                } catch { }
+            };
+            if (!document.fullscreenElement && !(document as any).webkitFullscreenElement) {
+                if (docEl.requestFullscreen) {
+                    Promise.resolve(docEl.requestFullscreen({ navigationUI: "hide" }))
+                        .then(requestLock)
+                        .catch(() => { });
+                } else if (docEl.webkitRequestFullscreen) {
+                    docEl.webkitRequestFullscreen();
+                    requestLock();
+                } else if (docEl.msRequestFullscreen) {
+                    docEl.msRequestFullscreen();
+                }
+            } else {
+                requestLock();
+            }
+        } catch {
+            // ignore fullscreen restrictions
+        }
+        navigate(path);
+    }
+
     return (
         <div>
             <div className="page-header">
@@ -193,15 +223,13 @@ export default function TablesAdmin() {
                                     </td>
                                     <td>
                                         <div className="flex gap-2">
-                                            <a
+                                            <button
+                                                type="button"
                                                 className="btn btn-primary btn-sm"
-                                                href={`/kiosk?table_id=${t.id}`}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                style={{ textDecoration: "none" }}
+                                                onClick={() => launchKioskFullscreen(`/kiosk?table_id=${t.id}`)}
                                             >
                                                 📱 Launch Tablet UI
-                                            </a>
+                                            </button>
                                             <button className="btn btn-outline btn-sm" onClick={() => generateQR(t.id)}>
                                                 🔗 Generate QR
                                             </button>
@@ -329,15 +357,13 @@ export default function TablesAdmin() {
                             }}>
                                 ⬇️ Download QR
                             </button>
-                            <a
+                            <button
+                                type="button"
                                 className="btn btn-primary"
-                                href={`${window.location.origin}${qrResult.kiosk_path || `/table/${qrResult.token}`}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                style={{ display: "inline-flex", textDecoration: "none" }}
+                                onClick={() => launchKioskFullscreen(qrResult.kiosk_path || `/table/${qrResult.token}`)}
                             >
                                 📱 Open Tablet Kiosk UI
-                            </a>
+                            </button>
                             <a
                                 className="btn btn-outline"
                                 href={qrResult.wa_link}
